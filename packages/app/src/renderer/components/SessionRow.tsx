@@ -216,7 +216,7 @@ function SecurityBadge({ session }: { session: Session }): React.ReactElement | 
   return (
     <span
       data-testid="security-badge"
-      data-severity="low"
+      data-severity={isHigh ? 'high' : 'low'}
       title={tooltip}
       aria-label={tooltip}
       className={`inline-flex items-center justify-center w-5 h-5 ${tone}`}

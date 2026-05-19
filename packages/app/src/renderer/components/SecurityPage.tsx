@@ -15,10 +15,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { AlertTriangle, Info, RotateCw, Trash2, ShieldAlert, X, Settings as SettingsIcon } from 'lucide-react'
+import { AlertTriangle, Eye, EyeOff, Info, RotateCw, Trash2, ShieldAlert, X, Settings as SettingsIcon } from 'lucide-react'
 import type {
   FindingRow,
   RiskByCategoryRow,
+  ScanStatus,
   SessionFindingFilter,
   SessionWithFindingCounts,
   Session,
@@ -27,37 +28,59 @@ import { securityApi } from '../api/security.js'
 import PurgeConfirmDialog from './security/PurgeConfirmDialog.js'
 import { parseQualifier, withQualifier } from './security/parse-qualifier.js'
 import { SourceBadge } from './Badges.js'
+import { formatRelativeDate } from '../../shared/formatDate.js'
 
 interface Props {
   onOpenSession: (sessionUuid: string) => void
 }
 
-interface SessionWithFindings extends SessionWithFindingCounts {
-  source?: Session['source']
-  projectDisplayName?: string
-}
+type Sess = SessionWithFindingCounts & { source: Session['source'] }
 
 export default function SecurityPage({ onOpenSession }: Props) {
   const { t } = useTranslation()
   const [risk, setRisk] = useState<RiskByCategoryRow[]>([])
-  const [sessions, setSessions] = useState<SessionWithFindings[]>([])
+  const [sessions, setSessions] = useState<Sess[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [showInfo, setShowInfo] = useState(false)
   const [bulkPurgeKind, setBulkPurgeKind] = useState<string | null>(null)
+  const [bulkPurgeSamples, setBulkPurgeSamples] = useState<Array<{ value: string; sessionTitle: string }>>([])
+  // Default: reveal values. The page exists so the user can review
+  // what got captured — hiding the very thing they came to read is
+  // anti-UX. The eye-off toggle is for screen-share / step-away moments.
+  const [valuesHidden, setValuesHidden] = useState(false)
+  const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null)
+  // `backfillStart` is captured the first tick the worker reports
+  // backfillRemaining > 0 — the scanning banner reads "12 of N" from
+  // it. Reset when the worker goes idle.
+  const [backfillStart, setBackfillStart] = useState<number | null>(null)
+  // The latest moment `scan_completed_at` was set on ANY session — used
+  // as the "scanned X ago" line in the meta row.
+  const [lastScanCompletedAt, setLastScanCompletedAt] = useState<string | null>(null)
   const parsed = useMemo(() => parseQualifier(query), [query])
 
   const filter: SessionFindingFilter = parsed.filter
 
   const refresh = useCallback(async () => {
     try {
-      const [r, s] = await Promise.all([
+      const [r, s, st] = await Promise.all([
         securityApi.riskByCategory(),
         securityApi.listSessionsWithFindings(filter),
+        securityApi.getScanStatus(),
       ])
       setRisk(r)
-      setSessions(s as SessionWithFindings[])
+      setSessions(s as Sess[])
+      setScanStatus(st)
+      // Pick the most recent scan_completed_at across the session set
+      // we just fetched. Cheap because s is already in-memory.
+      const completedAts = (s as Sess[])
+        .map(x => x.scanCompletedAt)
+        .filter((x): x is string => Boolean(x))
+      if (completedAts.length > 0) {
+        completedAts.sort()
+        setLastScanCompletedAt(completedAts[completedAts.length - 1] ?? null)
+      }
       setLoading(false)
       setError(null)
     } catch (err) {
@@ -72,6 +95,33 @@ export default function SecurityPage({ onOpenSession }: Props) {
     return () => { off() }
   }, [refresh])
 
+  // Capture the backfill total the first tick we see > 0, reset when idle.
+  useEffect(() => {
+    if (!scanStatus) return
+    const inFlight = scanStatus.backfillRemaining + (scanStatus.scanning !== null ? 1 : 0)
+    if (inFlight === 0) {
+      if (backfillStart !== null) setBackfillStart(null)
+      return
+    }
+    if (backfillStart === null || inFlight > backfillStart) {
+      setBackfillStart(inFlight)
+    }
+  }, [scanStatus, backfillStart])
+
+  // Poll status while the worker is busy so the progress bar moves.
+  useEffect(() => {
+    if (!scanStatus) return
+    const busy = scanStatus.queued > 0 || scanStatus.scanning !== null || scanStatus.backfillRemaining > 0
+    if (!busy) return
+    const handle = setInterval(() => {
+      void securityApi.getScanStatus().then(setScanStatus).catch(() => {})
+    }, 500)
+    return () => clearInterval(handle)
+  }, [scanStatus])
+
+  const isScanning = scanStatus !== null &&
+    (scanStatus.queued > 0 || scanStatus.scanning !== null || scanStatus.backfillRemaining > 0)
+
   async function handleRescanAll() {
     await securityApi.rescanAll()
     void refresh()
@@ -85,17 +135,36 @@ export default function SecurityPage({ onOpenSession }: Props) {
     setQuery('')
   }
 
-  async function handleBulkPurgeKind(kind: string) {
+  async function openBulkPurge(kind: string) {
+    setBulkPurgeKind(kind)
+    // Fetch a few sample values up-front so the modal can show them.
     const rows = await securityApi.listFindings({
       kind: kind as Parameters<typeof securityApi.listFindings>[0]['kind'],
       state: 'active',
     })
-    if (rows.length === 0) {
-      setBulkPurgeKind(null)
-      return
+    const samples: Array<{ value: string; sessionTitle: string }> = []
+    for (const r of rows.slice(0, 4)) {
+      const v = await securityApi.getFindingValue(r.id).catch(() => null)
+      if (v !== null) {
+        const session = sessions.find(s => s.id === r.sessionId)
+        const truncated = v.length > 56 ? v.slice(0, 54) + '…' : v
+        samples.push({ value: truncated, sessionTitle: session?.title?.trim() || '(no title)' })
+      }
     }
-    await securityApi.purgeFindings(rows.map((r) => r.id))
+    setBulkPurgeSamples(samples)
+  }
+
+  async function confirmBulkPurgeKind() {
+    if (!bulkPurgeKind) return
+    const rows = await securityApi.listFindings({
+      kind: bulkPurgeKind as Parameters<typeof securityApi.listFindings>[0]['kind'],
+      state: 'active',
+    })
+    if (rows.length > 0) {
+      await securityApi.purgeFindings(rows.map((r) => r.id))
+    }
     setBulkPurgeKind(null)
+    setBulkPurgeSamples([])
     void refresh()
   }
 
@@ -113,7 +182,35 @@ export default function SecurityPage({ onOpenSession }: Props) {
       <div className="flex-none flex items-center gap-3 px-6 pt-2 pb-3">
         <span className="font-mono text-[11px] text-warm-faint dark:text-dark-muted tabular-nums">
           {t('security.summary', { findings: visibleActive, sessions: sessions.length, defaultValue: '{{findings}} active · {{sessions}} sessions' })}
+          {lastScanCompletedAt && !isScanning && (
+            <>
+              {' · '}
+              {t('security.scanned_ago', {
+                ago: formatScanAgo(lastScanCompletedAt),
+                defaultValue: 'scanned {{ago}}',
+              })}
+            </>
+          )}
         </span>
+        <button
+          type="button"
+          data-testid="security-toggle-values"
+          onClick={() => setValuesHidden(v => !v)}
+          title={valuesHidden
+            ? t('security.show_values', { defaultValue: 'Show values' })
+            : t('security.hide_values', { defaultValue: 'Hide values (screen-share mode)' })}
+          aria-label={valuesHidden
+            ? t('security.show_values', { defaultValue: 'Show values' })
+            : t('security.hide_values', { defaultValue: 'Hide values (screen-share mode)' })}
+          aria-pressed={valuesHidden}
+          className={`inline-flex items-center justify-center w-5 h-5 rounded transition-colors ${
+            valuesHidden
+              ? 'text-accent dark:text-accent-dark bg-accent-bg dark:bg-accent-bg-dark'
+              : 'text-warm-faint dark:text-dark-muted hover:bg-warm-surface2 dark:hover:bg-dark-surface2 hover:text-warm-text dark:hover:text-dark-text'
+          }`}
+        >
+          {valuesHidden ? <EyeOff size={13} strokeWidth={1.6} aria-hidden /> : <Eye size={13} strokeWidth={1.6} aria-hidden />}
+        </button>
         <button
           type="button"
           data-testid="security-rescan-all"
@@ -132,10 +229,14 @@ export default function SecurityPage({ onOpenSession }: Props) {
             <p className="text-sm text-warm-muted dark:text-dark-muted py-4">
               {t('common.error')}: {error}
             </p>
-          ) : risk.length === 0 ? (
-            <EmptyState onRescan={handleRescanAll} />
+          ) : risk.length === 0 && !isScanning ? (
+            <EmptyState onRescan={handleRescanAll} lastScan={lastScanCompletedAt} currentProfile={scanStatus?.currentProfile ?? null} />
           ) : (
             <>
+              {isScanning && scanStatus && (
+                <ScanBanner status={scanStatus} backfillStart={backfillStart} />
+              )}
+
               {highCats.length > 0 && (
                 <section className="mb-5">
                   <SectionHeader
@@ -148,7 +249,7 @@ export default function SecurityPage({ onOpenSession }: Props) {
                     tone="high"
                     activeKind={parsed.filter.kind ?? null}
                     onSelect={selectKindFilter}
-                    onBulkPurge={(k) => setBulkPurgeKind(k)}
+                    onBulkPurge={(k) => void openBulkPurge(k)}
                   />
                 </section>
               )}
@@ -164,7 +265,7 @@ export default function SecurityPage({ onOpenSession }: Props) {
                     tone="default"
                     activeKind={parsed.filter.kind ?? null}
                     onSelect={selectKindFilter}
-                    onBulkPurge={(k) => setBulkPurgeKind(k)}
+                    onBulkPurge={(k) => void openBulkPurge(k)}
                   />
                 </section>
               )}
@@ -200,6 +301,7 @@ export default function SecurityPage({ onOpenSession }: Props) {
                         key={s.id}
                         session={s}
                         activeKindFilter={parsed.filter.kind ?? null}
+                        valuesHidden={valuesHidden}
                         onOpen={() => onOpenSession(s.sessionUuid)}
                         onRefresh={refresh}
                       />
@@ -226,9 +328,55 @@ export default function SecurityPage({ onOpenSession }: Props) {
         count={bulkPurgeKind ? (risk.find((c) => c.kind === bulkPurgeKind)?.count ?? 0) : 0}
         kind={bulkPurgeKind ?? ''}
         bulk
-        onConfirm={() => { if (bulkPurgeKind) void handleBulkPurgeKind(bulkPurgeKind) }}
-        onCancel={() => setBulkPurgeKind(null)}
+        bulkSamples={bulkPurgeSamples}
+        onConfirm={() => { void confirmBulkPurgeKind() }}
+        onCancel={() => { setBulkPurgeKind(null); setBulkPurgeSamples([]) }}
       />
+    </div>
+  )
+}
+
+function ScanBanner({ status, backfillStart }: { status: ScanStatus; backfillStart: number | null }) {
+  const { t } = useTranslation()
+  const inFlight = status.backfillRemaining + (status.scanning !== null ? 1 : 0)
+  const total = backfillStart ?? inFlight
+  const done = Math.max(0, total - inFlight)
+  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0
+
+  return (
+    <div
+      data-testid="security-scan-banner"
+      className="grid items-center gap-3 mb-5 px-4 py-2.5 rounded-lg bg-accent-bg dark:bg-accent-bg-dark border border-accent-bg-strong dark:border-accent-bg-strong-dark"
+      style={{ gridTemplateColumns: 'auto 1fr auto' }}
+    >
+      <span className="relative inline-flex items-center justify-center w-2 h-2 rounded-full bg-accent dark:bg-accent-dark">
+        <span className="absolute inset-[-3px] rounded-full bg-accent dark:bg-accent-dark opacity-20 animate-ping" />
+      </span>
+      <div className="flex flex-col gap-1.5 min-w-0">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-[11px] font-semibold leading-[14px] text-accent dark:text-accent-dark">
+            {t('security.scanning', { defaultValue: 'Scanning' })}
+          </span>
+          <span className="font-mono text-[11px] text-accent dark:text-accent-dark tabular-nums">
+            {t('security.scanning_progress', {
+              done, total,
+              defaultValue: '{{done}} / {{total}} sessions',
+            })}
+          </span>
+          <span className="font-mono text-[11px] text-warm-muted dark:text-dark-muted tabular-nums">
+            {status.currentProfile}
+          </span>
+        </div>
+        <div
+          className="relative h-1 rounded-full overflow-hidden"
+          style={{ background: 'rgba(200,90,0,0.12)' }}
+        >
+          <div
+            className="absolute inset-y-0 left-0 bg-accent dark:bg-accent-dark rounded-full transition-[width] duration-300"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      </div>
     </div>
   )
 }
@@ -270,6 +418,7 @@ function KindGrid({
           key={r.kind}
           kind={r.kind}
           count={r.count}
+          sessions={r.sessions}
           tone={tone}
           active={activeKind === r.kind}
           onSelect={() => onSelect(r.kind)}
@@ -283,6 +432,7 @@ function KindGrid({
 function KindTile({
   kind,
   count,
+  sessions,
   tone,
   active,
   onSelect,
@@ -290,6 +440,7 @@ function KindTile({
 }: {
   kind: string
   count: number
+  sessions: number
   tone: 'high' | 'default' | 'info'
   active: boolean
   onSelect: () => void
@@ -319,8 +470,13 @@ function KindTile({
       <span className="font-mono text-[12px] text-warm-text dark:text-dark-text truncate">
         {kind}
       </span>
-      <span className={`font-mono tabular-nums text-[18px] leading-none font-medium tracking-[-0.01em] ${countColor}`}>
-        {count}
+      <span className="flex items-baseline justify-between gap-2">
+        <span className={`font-mono tabular-nums text-[18px] leading-none font-medium tracking-[-0.01em] ${countColor}`}>
+          {count}
+        </span>
+        <span className="font-mono text-[10px] text-warm-muted dark:text-dark-muted tabular-nums whitespace-nowrap">
+          {sessions} {sessions === 1 ? 'session' : 'sessions'}
+        </span>
       </span>
       <button
         type="button"
@@ -358,11 +514,13 @@ function FilterPill({ children, onClear }: { children: React.ReactNode; onClear:
 function SessionCard({
   session,
   activeKindFilter,
+  valuesHidden,
   onOpen,
   onRefresh,
 }: {
-  session: SessionWithFindings
+  session: Sess
   activeKindFilter: string | null
+  valuesHidden: boolean
   onOpen: () => void
   onRefresh: () => void
 }) {
@@ -391,7 +549,12 @@ function SessionCard({
   const high = findings.filter(f => f.state === 'active' && isHigh(f.kind)).length
   const low = findings.filter(f => f.state === 'active' && !isHigh(f.kind)).length
   const title = session.title?.trim() || t('common.noTitle')
-  const dateStr = new Date(session.startedAt).toLocaleDateString()
+
+  // Match SessionRow's meta format exactly: relative date · N msgs · model
+  const looseT = t as unknown as (k: string, o?: Record<string, unknown>) => string
+  const dateStr = formatRelativeDate(session.startedAt, { t: looseT })
+  const msgsStr = t('session.msgs_other', { count: session.messageCount })
+  const modelStr = compactModel(session.model)
 
   return (
     <article
@@ -406,7 +569,7 @@ function SessionCard({
         onClick={onOpen}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen() } }}
       >
-        {session.source && <SourceBadge source={session.source} />}
+        <SourceBadge source={session.source} />
         <span className="flex-1 min-w-0 text-[13px] font-medium text-warm-text dark:text-dark-text truncate group-hover:text-accent dark:group-hover:text-accent-dark transition-colors">
           {title}
         </span>
@@ -425,16 +588,16 @@ function SessionCard({
           )}
         </span>
       </header>
-      <p className="mt-0.5 mx-1 pl-1 font-mono text-[11px] tabular-nums text-warm-faint dark:text-dark-muted">
-        {dateStr}
+      <p className="mt-0.5 mx-1 pl-1 font-mono text-[11px] tabular-nums text-warm-faint dark:text-dark-muted truncate">
+        {dateStr} · {msgsStr}{modelStr ? ` · ${modelStr}` : ''}
       </p>
       {visible.length > 0 && (
         <div className="mt-1.5 flex flex-col gap-px">
-          {visible.map((f, i) => (
+          {visible.map((f) => (
             <FindingItem
               key={f.id}
               finding={f}
-              defaultRevealed={i === 0 && f.state === 'active' && isHigh(f.kind)}
+              valuesHidden={valuesHidden}
               onChange={() => { void load(); onRefresh() }}
             />
           ))}
@@ -453,23 +616,46 @@ function SessionCard({
   )
 }
 
+/** Drops the long `claude-sonnet-4-5-20251022` form to `sonnet 4.5`.
+ *  Mirrors SessionRow's helper. */
+function compactModel(model: string | null | undefined): string {
+  if (!model) return ''
+  const m = model.match(/^claude-(opus|sonnet|haiku)(?:-(\d+))?(?:-(\d+))?$/)
+  if (!m) return model
+  const name = m[1]!
+  const major = m[2]
+  const minor = m[3]
+  if (minor) return `${name} ${major}.${minor}`
+  if (major) return `${name} ${major}`
+  return name
+}
+
 function FindingItem({
   finding,
-  defaultRevealed,
+  valuesHidden,
   onChange,
 }: {
   finding: FindingRow
-  defaultRevealed: boolean
+  /** Global hide toggle (screen-share mode). When true, blur every value
+   *  until the user hover-reveals it. When false (default), values render
+   *  in clear — the user is here to review them. */
+  valuesHidden: boolean
   onChange: () => void
 }) {
   const { t } = useTranslation()
   const [value, setValue] = useState<string | null>(null)
-  const [revealed, setRevealed] = useState(defaultRevealed)
+  // Per-row reveal override — only meaningful when valuesHidden is true.
+  const [localReveal, setLocalReveal] = useState(false)
   const [purgePending, setPurgePending] = useState(false)
 
   useEffect(() => {
     securityApi.getFindingValue(finding.id).then(setValue).catch(() => setValue(null))
   }, [finding.id])
+
+  // Reset local reveal whenever the global toggle flips back on.
+  useEffect(() => { if (valuesHidden) setLocalReveal(false) }, [valuesHidden])
+
+  const revealed = !valuesHidden || localReveal
 
   async function dismiss(scope: 'session' | 'global') {
     await securityApi.dismissFinding(finding.id, scope)
@@ -515,8 +701,8 @@ function FindingItem({
       <span className="text-warm-muted dark:text-dark-muted truncate">{finding.kind}</span>
       <span
         className={`truncate transition-[filter] duration-100 ${valueClass}`}
-        onMouseEnter={() => !isPurged && setRevealed(true)}
-        onClick={() => !isPurged && setRevealed(true)}
+        onMouseEnter={() => valuesHidden && !isPurged && setLocalReveal(true)}
+        onClick={() => valuesHidden && !isPurged && setLocalReveal(true)}
       >
         {displayValue}
       </span>
@@ -621,6 +807,7 @@ function InfoDrawer({
                 key={r.kind}
                 kind={r.kind}
                 count={r.count}
+                sessions={r.sessions}
                 tone="info"
                 active={false}
                 onSelect={() => {}}
@@ -666,7 +853,15 @@ function Segmented({ value }: { value: 'shown' | 'hidden' }) {
   )
 }
 
-function EmptyState({ onRescan }: { onRescan: () => void }) {
+function EmptyState({
+  onRescan,
+  lastScan,
+  currentProfile,
+}: {
+  onRescan: () => void
+  lastScan: string | null
+  currentProfile: string | null
+}) {
   const { t } = useTranslation()
   return (
     <div className="flex items-start gap-4 max-w-[560px] pt-4">
@@ -699,9 +894,46 @@ function EmptyState({ onRescan }: { onRescan: () => void }) {
             {t('security.detector_settings', { defaultValue: 'Detector settings' })}
           </button>
         </div>
+
+        {(lastScan || currentProfile) && (
+          <div className="mt-1.5 rounded-lg border border-warm-border dark:border-dark-border bg-warm-surface dark:bg-dark-surface px-3.5 py-3">
+            <div className="text-[11px] font-semibold leading-[14px] text-warm-muted dark:text-dark-muted mb-1.5">
+              {t('security.last_scan', { defaultValue: 'Last scan' })}
+            </div>
+            <div className="font-mono text-[11px] tabular-nums text-warm-muted dark:text-dark-muted leading-[18px]">
+              {lastScan && (
+                <div>
+                  {t('security.last_scan_when', { ago: formatScanAgo(lastScan), defaultValue: 'scanned {{ago}}' })}
+                </div>
+              )}
+              {currentProfile && (
+                <div>{currentProfile}</div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
+}
+
+/** Format a scan_completed_at timestamp as "2m ago" / "just now". */
+function formatScanAgo(iso: string): string {
+  try {
+    const t = new Date(iso).getTime()
+    const ms = Date.now() - t
+    if (!Number.isFinite(ms) || ms < 0) return 'just now'
+    const s = Math.floor(ms / 1000)
+    if (s < 45) return 'just now'
+    const m = Math.floor(s / 60)
+    if (m < 60) return `${m}m ago`
+    const h = Math.floor(m / 60)
+    if (h < 24) return `${h}h ago`
+    const d = Math.floor(h / 24)
+    return `${d}d ago`
+  } catch {
+    return ''
+  }
 }
 
 const HIGH_KINDS = new Set([
