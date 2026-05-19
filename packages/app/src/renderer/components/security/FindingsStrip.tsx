@@ -4,10 +4,11 @@
 // securityFeatureEnabled() — invisible in prod until ship gate clears.
 
 import { useCallback, useEffect, useState } from 'react'
-import { AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
 import type { Session, FindingRow } from '@spool-lab/core'
 import { securityFeatureEnabled } from '../../featureFlags.js'
 import { securityApi } from '../../api/security.js'
+import PurgeConfirmDialog from './PurgeConfirmDialog.js'
 
 interface Props {
   session: Session
@@ -82,12 +83,19 @@ export default function FindingsStrip({ session }: Props) {
 
 function StripFindingRow({ finding, onChange }: { finding: FindingRow; onChange: () => void }) {
   const [value, setValue] = useState<string | null>(null)
+  const [purgePending, setPurgePending] = useState(false)
   useEffect(() => {
     securityApi.getFindingValue(finding.id).then(setValue).catch(() => setValue(null))
   }, [finding.id])
 
   async function dismiss(scope: 'session' | 'global') {
     await securityApi.dismissFinding(finding.id, scope)
+    onChange()
+  }
+
+  async function purge() {
+    await securityApi.purgeFinding(finding.id)
+    setPurgePending(false)
     onChange()
   }
 
@@ -121,6 +129,23 @@ function StripFindingRow({ finding, onChange }: { finding: FindingRow; onChange:
           >
             Everywhere
           </button>
+          <button
+            type="button"
+            data-testid="strip-purge-button"
+            onClick={() => setPurgePending(true)}
+            className="px-1.5 py-0.5 rounded text-warm-accent dark:text-dark-accent hover:bg-warm-bg dark:hover:bg-dark-bg inline-flex items-center gap-1"
+            title="Purge from local archive"
+          >
+            <Trash2 size={11} strokeWidth={1.75} aria-hidden />
+            Purge
+          </button>
+          <PurgeConfirmDialog
+            open={purgePending}
+            count={1}
+            summary={finding.kind}
+            onConfirm={() => { void purge() }}
+            onCancel={() => setPurgePending(false)}
+          />
         </>
       ) : (
         <span className="text-warm-muted dark:text-dark-muted">{finding.state}</span>
