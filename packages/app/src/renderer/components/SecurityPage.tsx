@@ -9,7 +9,7 @@
 // already lets a user see what was found, click into the session,
 // and dismiss things.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ShieldAlert, RotateCw, X, Trash2 } from 'lucide-react'
 import type {
   FindingRow,
@@ -18,6 +18,7 @@ import type {
 } from '@spool-lab/core'
 import { securityApi } from '../api/security.js'
 import PurgeConfirmDialog from './security/PurgeConfirmDialog.js'
+import { parseQualifier, withQualifier } from './security/parse-qualifier.js'
 
 interface Props {
   onOpenSession: (sessionUuid: string) => void
@@ -28,12 +29,15 @@ export default function SecurityPage({ onOpenSession }: Props) {
   const [sessions, setSessions] = useState<SessionWithFindingCounts[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const parsed = useMemo(() => parseQualifier(query), [query])
+  const [bulkPurgeKind, setBulkPurgeKind] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     try {
       const [r, s] = await Promise.all([
         securityApi.riskByCategory(),
-        securityApi.listSessionsWithFindings({}),
+        securityApi.listSessionsWithFindings(parsed.filter),
       ])
       setRisk(r)
       setSessions(s)
@@ -43,7 +47,7 @@ export default function SecurityPage({ onOpenSession }: Props) {
       setError(err instanceof Error ? err.message : String(err))
       setLoading(false)
     }
-  }, [])
+  }, [parsed.filter])
 
   useEffect(() => {
     void refresh()
@@ -53,6 +57,24 @@ export default function SecurityPage({ onOpenSession }: Props) {
 
   async function handleRescanAll() {
     await securityApi.rescanAll()
+    void refresh()
+  }
+
+  function selectKindFilter(kind: string) {
+    setQuery((q) => withQualifier(q, 'kind', kind))
+  }
+
+  async function handleBulkPurgeKind(kind: string) {
+    const rows = await securityApi.listFindings({
+      kind: kind as Parameters<typeof securityApi.listFindings>[0]['kind'],
+      state: 'active',
+    })
+    if (rows.length === 0) {
+      setBulkPurgeKind(null)
+      return
+    }
+    await securityApi.purgeFindings(rows.map((r) => r.id))
+    setBulkPurgeKind(null)
     void refresh()
   }
 
@@ -107,7 +129,14 @@ export default function SecurityPage({ onOpenSession }: Props) {
             </div>
             <div className="flex flex-wrap gap-2">
               {highCats.map(c => (
-                <CategoryChip key={c.kind} kind={c.kind} count={c.count} severity="high" />
+                <CategoryChip
+                  key={c.kind}
+                  kind={c.kind}
+                  count={c.count}
+                  severity="high"
+                  onSelect={() => selectKindFilter(c.kind)}
+                  onBulkPurge={() => setBulkPurgeKind(c.kind)}
+                />
               ))}
             </div>
           </div>
@@ -121,7 +150,14 @@ export default function SecurityPage({ onOpenSession }: Props) {
             </summary>
             <div className="flex flex-wrap gap-2 mt-2">
               {lowCats.map(c => (
-                <CategoryChip key={c.kind} kind={c.kind} count={c.count} severity="low" />
+                <CategoryChip
+                  key={c.kind}
+                  kind={c.kind}
+                  count={c.count}
+                  severity="low"
+                  onSelect={() => selectKindFilter(c.kind)}
+                  onBulkPurge={() => setBulkPurgeKind(c.kind)}
+                />
               ))}
             </div>
           </details>
@@ -131,6 +167,29 @@ export default function SecurityPage({ onOpenSession }: Props) {
           <p className="text-sm text-warm-muted dark:text-dark-muted">No active findings.</p>
         )}
       </section>
+
+      <div className="mb-3">
+        <input
+          type="search"
+          data-testid="security-filter-bar"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="kind:api-key is:active severity:high · free text"
+          className="w-full px-3 py-2 rounded border border-warm-border dark:border-dark-border bg-warm-bg dark:bg-dark-bg-2 text-sm text-warm-text dark:text-dark-text font-mono"
+        />
+      </div>
+
+      <PurgeConfirmDialog
+        open={bulkPurgeKind !== null}
+        count={
+          bulkPurgeKind
+            ? (risk.find((c) => c.kind === bulkPurgeKind)?.count ?? 0)
+            : 0
+        }
+        summary={bulkPurgeKind ? `all ${bulkPurgeKind}` : ''}
+        onConfirm={() => { if (bulkPurgeKind) void handleBulkPurgeKind(bulkPurgeKind) }}
+        onCancel={() => setBulkPurgeKind(null)}
+      />
 
       <section data-testid="security-session-list">
         <h2 className="text-sm uppercase tracking-wide text-warm-muted dark:text-dark-muted mb-2">
@@ -155,7 +214,19 @@ export default function SecurityPage({ onOpenSession }: Props) {
   )
 }
 
-function CategoryChip({ kind, count, severity }: { kind: string; count: number; severity: 'high' | 'low' }) {
+function CategoryChip({
+  kind,
+  count,
+  severity,
+  onSelect,
+  onBulkPurge,
+}: {
+  kind: string
+  count: number
+  severity: 'high' | 'low'
+  onSelect?: () => void
+  onBulkPurge?: () => void
+}) {
   const cls = severity === 'high'
     ? 'bg-warm-surface dark:bg-dark-surface text-warm-text dark:text-dark-text border-warm-accent/40 dark:border-dark-accent/40'
     : 'bg-warm-surface dark:bg-dark-surface text-warm-muted dark:text-dark-muted border-warm-border dark:border-dark-border'
@@ -164,11 +235,30 @@ function CategoryChip({ kind, count, severity }: { kind: string; count: number; 
       data-testid="risk-category-chip"
       data-kind={kind}
       data-severity={severity}
-      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded border text-xs ${cls}`}
+      className={`group inline-flex items-center gap-1.5 px-2.5 py-1 rounded border text-xs ${cls}`}
     >
-      <span>{kind}</span>
-      <span className="text-warm-muted dark:text-dark-muted">·</span>
-      <span className="font-mono">{count}</span>
+      <button
+        type="button"
+        onClick={onSelect}
+        className="inline-flex items-center gap-1.5 hover:text-warm-text dark:hover:text-dark-text"
+        title={`Filter by ${kind}`}
+      >
+        <span>{kind}</span>
+        <span className="text-warm-muted dark:text-dark-muted">·</span>
+        <span className="font-mono">{count}</span>
+      </button>
+      {onBulkPurge && (
+        <button
+          type="button"
+          data-testid="risk-bulk-purge"
+          onClick={onBulkPurge}
+          className="opacity-0 group-hover:opacity-100 transition-opacity ml-1 text-warm-accent dark:text-dark-accent"
+          title={`Purge all ${kind}`}
+          aria-label={`Purge all ${kind}`}
+        >
+          <Trash2 size={11} strokeWidth={1.75} aria-hidden />
+        </button>
+      )}
     </span>
   )
 }
