@@ -30,6 +30,7 @@ import type {
 import { securityApi } from '../api/security.js'
 import PurgeConfirmDialog from './security/PurgeConfirmDialog.js'
 import { parseQualifier, toggleKindQualifier } from './security/parse-qualifier.js'
+import { compactModel, formatScanAgo, friendlyKind, isHighKind, isInfoKind } from './security/page-helpers.js'
 import { SourceBadge } from './Badges.js'
 import Menu from './Menu.js'
 import { formatRelativeDate } from '../../shared/formatDate.js'
@@ -847,15 +848,15 @@ function SessionCard({
   // info findings are stored as an audit record but have ~98% false-
   // positive rate, so showing 848 absolute-path rows would drown the
   // real leaks. The Info drawer at the bottom is where they surface.
-  const allowInfo = activeKinds.some(k => isInfo(k))
+  const allowInfo = activeKinds.some(k => isInfoKind(k))
   const reportable = allowInfo
     ? findings
-    : findings.filter(f => !isInfo(f.kind))
+    : findings.filter(f => !isInfoKind(f.kind))
 
   const visible = showAll ? reportable : reportable.slice(0, LIMIT)
   const hidden = reportable.length - visible.length
-  const high = reportable.filter(f => f.state === 'active' && isHigh(f.kind)).length
-  const low = reportable.filter(f => f.state === 'active' && !isHigh(f.kind)).length
+  const high = reportable.filter(f => f.state === 'active' && isHighKind(f.kind)).length
+  const low = reportable.filter(f => f.state === 'active' && !isHighKind(f.kind)).length
   const title = session.title?.trim() || t('common.noTitle')
 
   // Match SessionRow's meta format exactly: relative date · N msgs · model
@@ -1001,17 +1002,9 @@ function SessionCard({
 
 /** Drops the long `claude-sonnet-4-5-20251022` form to `sonnet 4.5`.
  *  Mirrors SessionRow's helper. */
-function compactModel(model: string | null | undefined): string {
-  if (!model) return ''
-  const m = model.match(/^claude-(opus|sonnet|haiku)(?:-(\d+))?(?:-(\d+))?$/)
-  if (!m) return model
-  const name = m[1]!
-  const major = m[2]
-  const minor = m[3]
-  if (minor) return `${name} ${major}.${minor}`
-  if (major) return `${name} ${major}`
-  return name
-}
+// `compactModel`, `friendlyKind`, `formatScanAgo`, `isHigh`, `isInfo`
+// moved to `./security/page-helpers.ts` so each can be unit-tested
+// without standing up the full SecurityPage tree.
 
 function FindingItem({
   finding,
@@ -1072,7 +1065,7 @@ function FindingItem({
 
   const isActive = finding.state === 'active'
   const isPurged = finding.state === 'purged'
-  const high = isHigh(finding.kind)
+  const high = isHighKind(finding.kind)
   const bulletClass = isPurged
     ? 'bg-warm-faint dark:bg-dark-faint'
     : high
@@ -1221,51 +1214,5 @@ function EmptyState({
   )
 }
 
-/** Format a scan_completed_at timestamp as "2m ago" / "just now". */
-function formatScanAgo(iso: string): string {
-  try {
-    const t = new Date(iso).getTime()
-    const ms = Date.now() - t
-    if (!Number.isFinite(ms) || ms < 0) return 'just now'
-    const s = Math.floor(ms / 1000)
-    if (s < 45) return 'just now'
-    const m = Math.floor(s / 60)
-    if (m < 60) return `${m}m ago`
-    const h = Math.floor(m / 60)
-    if (h < 24) return `${h}h ago`
-    const d = Math.floor(h / 24)
-    return `${d}d ago`
-  } catch {
-    return ''
-  }
-}
-
-const HIGH_KINDS = new Set([
-  'private-key', 'ssh-key', 'cloud-cred-ini', 'kubeconfig-token', 'netrc',
-  'connection-string', 'url-creds', 'api-key', 'jwt', 'bearer',
-  'basic-auth', 'env-var', 'generic-secret',
-])
-const INFO_KINDS = new Set(['absolute-path', 'ip', 'internal-host'])
-function isHigh(kind: string): boolean {
-  return HIGH_KINDS.has(kind)
-}
-function isInfo(kind: string): boolean {
-  return INFO_KINDS.has(kind)
-}
-
-function friendlyKind(kind: string): string {
-  const map: Record<string, string> = {
-    'api-key': 'API key', 'private-key': 'private key', 'jwt': 'JWT',
-    'bearer': 'bearer token', 'kubeconfig-token': 'kubeconfig token',
-    'env-var': 'env var', 'url-creds': 'URL credentials',
-    'connection-string': 'connection string', 'ssh-key': 'SSH key',
-    'cloud-cred-ini': 'cloud creds', 'netrc': 'netrc',
-    'basic-auth': 'basic auth', 'generic-secret': 'secret',
-    'email': 'email', 'person-name': 'name', 'phone': 'phone',
-    'street-address': 'address', 'credit-card': 'credit card',
-    'ssn': 'SSN', 'date-of-birth': 'DOB',
-    'absolute-path': 'absolute path', 'ip': 'IP address',
-    'internal-host': 'internal host',
-  }
-  return map[kind] ?? kind
-}
+// (helpers moved to security/page-helpers.ts — compactModel,
+// formatScanAgo, isHighKind/isInfoKind, friendlyKind)
