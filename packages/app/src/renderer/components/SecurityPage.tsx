@@ -13,36 +13,49 @@
 //   5. Info drawer — informational signals (paths, IPs, internal-host)
 //      collapsed by default with the false-positive audit fact visible.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { AlertTriangle, Eye, EyeOff, Info, RotateCw, Trash2, ShieldAlert, X, Settings as SettingsIcon } from 'lucide-react'
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, Eye, EyeOff, Info, Loader2, MoreHorizontal, RotateCw, SquarePen, SquareTerminal, Trash2, ShieldAlert, X, Settings as SettingsIcon } from 'lucide-react'
+import { toast } from 'sonner'
+import { getSessionResumeCommand } from '../../shared/resumeCommand.js'
 import type {
   FindingRow,
   RiskByCategoryRow,
   ScanStatus,
+  FindingFilter,
   SessionFindingFilter,
   SessionWithFindingCounts,
   Session,
 } from '@spool-lab/core'
 import { securityApi } from '../api/security.js'
 import PurgeConfirmDialog from './security/PurgeConfirmDialog.js'
-import { parseQualifier, withQualifier } from './security/parse-qualifier.js'
+import { parseQualifier, toggleKindQualifier } from './security/parse-qualifier.js'
 import { SourceBadge } from './Badges.js'
+import Menu from './Menu.js'
 import { formatRelativeDate } from '../../shared/formatDate.js'
 
 interface Props {
   onOpenSession: (sessionUuid: string) => void
+  /** Optional share-draft starter; rendered as a menu item when share
+   *  feature is enabled. App.tsx wires this only when shareEnabled. */
+  onShareSession?: (sessionUuid: string) => void
 }
 
 type Sess = SessionWithFindingCounts & { source: Session['source'] }
 
-export default function SecurityPage({ onOpenSession }: Props) {
+export default function SecurityPage({ onOpenSession, onShareSession }: Props) {
   const { t } = useTranslation()
   const [risk, setRisk] = useState<RiskByCategoryRow[]>([])
   const [sessions, setSessions] = useState<Sess[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
+  // Default to collapsed so the sessions list — the main thing users
+  // come here to act on — gets the bulk of the viewport. The header
+  // renders a one-line preview of the top kinds so the category grid
+  // still hints at its contents even when folded.
+  const [showHigh, setShowHigh] = useState(false)
+  const [showLow, setShowLow] = useState(false)
   const [showInfo, setShowInfo] = useState(false)
   const [bulkPurgeKind, setBulkPurgeKind] = useState<string | null>(null)
   const [bulkPurgeSamples, setBulkPurgeSamples] = useState<Array<{ value: string; sessionTitle: string }>>([])
@@ -51,6 +64,17 @@ export default function SecurityPage({ onOpenSession }: Props) {
   // anti-UX. The eye-off toggle is for screen-share / step-away moments.
   const [valuesHidden, setValuesHidden] = useState(false)
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null)
+  // True between the click on Rescan and the moment the worker reports
+  // queued/scanning/backfillRemaining > 0. Gives the button + banner an
+  // optimistic visible state — without this, very fast rescans (small
+  // archives) can complete inside one 500 ms poll window and the user
+  // sees no feedback at all.
+  const [rescanInFlight, setRescanInFlight] = useState(false)
+  // Snapshot captured the moment the worker transitions from busy to
+  // idle. Keeps the "scan complete" banner pinned so the user gets a
+  // confirmation moment instead of a flash; cleared only via the X.
+  const [scanResult, setScanResult] = useState<{ scanned: number; high: number; low: number } | null>(null)
+  const wasScanningRef = useRef(false)
   // `backfillStart` is captured the first tick the worker reports
   // backfillRemaining > 0 — the scanning banner reads "12 of N" from
   // it. Reset when the worker goes idle.
@@ -119,27 +143,67 @@ export default function SecurityPage({ onOpenSession }: Props) {
     return () => clearInterval(handle)
   }, [scanStatus])
 
-  const isScanning = scanStatus !== null &&
-    (scanStatus.queued > 0 || scanStatus.scanning !== null || scanStatus.backfillRemaining > 0)
+  const isScanning = rescanInFlight || (scanStatus !== null &&
+    (scanStatus.queued > 0 || scanStatus.scanning !== null || scanStatus.backfillRemaining > 0))
+
+  // Edge-detect the busy→idle transition. On the falling edge we
+  // freeze the post-scan counts so the result banner has something to
+  // show after isScanning goes back to false. A new rescan tears down
+  // the old result so we don't show stale numbers.
+  //
+  // useLayoutEffect (not useEffect) so the scanResult setState lands
+  // before the browser paints the post-transition frame. With
+  // useEffect React would commit the "scanning banner removed,
+  // result banner not yet added" DOM and paint once before the second
+  // re-render added the result banner — a one-frame gap the user
+  // perceives as a flash.
+  useLayoutEffect(() => {
+    if (isScanning) {
+      wasScanningRef.current = true
+      if (scanResult) setScanResult(null)
+      return
+    }
+    if (wasScanningRef.current) {
+      wasScanningRef.current = false
+      const highTotal = risk.filter(r => r.severity === 'high').reduce((a, c) => a + c.count, 0)
+      const lowTotal = risk.filter(r => r.severity === 'low').reduce((a, c) => a + c.count, 0)
+      setScanResult({
+        scanned: backfillStart ?? sessions.length,
+        high: highTotal,
+        low: lowTotal,
+      })
+    }
+  }, [isScanning, risk, sessions.length, backfillStart, scanResult])
 
   async function handleRescanAll() {
-    await securityApi.rescanAll()
-    void refresh()
+    if (rescanInFlight) return
+    setRescanInFlight(true)
+    try {
+      await securityApi.rescanAll()
+      await refresh()
+    } finally {
+      // Clear the optimistic flag once the worker reports idle (or after
+      // a 200 ms minimum so very-fast rescans still flash a visible state).
+      setTimeout(() => setRescanInFlight(false), 200)
+    }
   }
 
-  function selectKindFilter(kind: string) {
-    setQuery((q) => withQualifier(q, 'kind', kind))
+  function toggleKindFilter(kind: string) {
+    setQuery((q) => toggleKindQualifier(q, kind))
   }
 
   function clearKindFilter() {
     setQuery('')
   }
 
+  const activeKinds: readonly string[] = parsed.filter.kinds ?? []
+  const activeKindSet = new Set(activeKinds)
+
   async function openBulkPurge(kind: string) {
     setBulkPurgeKind(kind)
     // Fetch a few sample values up-front so the modal can show them.
     const rows = await securityApi.listFindings({
-      kind: kind as Parameters<typeof securityApi.listFindings>[0]['kind'],
+      kind: kind as NonNullable<FindingFilter['kind']>,
       state: 'active',
     })
     const samples: Array<{ value: string; sessionTitle: string }> = []
@@ -157,7 +221,7 @@ export default function SecurityPage({ onOpenSession }: Props) {
   async function confirmBulkPurgeKind() {
     if (!bulkPurgeKind) return
     const rows = await securityApi.listFindings({
-      kind: bulkPurgeKind as Parameters<typeof securityApi.listFindings>[0]['kind'],
+      kind: bulkPurgeKind as NonNullable<FindingFilter['kind']>,
       state: 'active',
     })
     if (rows.length > 0) {
@@ -178,10 +242,17 @@ export default function SecurityPage({ onOpenSession }: Props) {
 
   return (
     <div data-testid="security-page" className="flex flex-col flex-1 min-h-0">
-      {/* Meta row */}
-      <div className="flex-none flex items-center gap-3 px-6 pt-2 pb-3">
+      {/* Meta row — matches SharesPage's pattern (px-6 pt-1.5 pb-3) so
+       *  the distance from the sidebar reads identical across pages. */}
+      <div className="flex-none flex items-center gap-3 px-6 pt-1.5 pb-3">
         <span className="font-mono text-[11px] text-warm-faint dark:text-dark-muted tabular-nums">
-          {t('security.summary', { findings: visibleActive, sessions: sessions.length, defaultValue: '{{findings}} active · {{sessions}} sessions' })}
+          {t('security.summary', { findings: visibleActive, sessions: sessions.length, defaultValue: '{{findings}} risk · {{sessions}} sessions' })}
+          {infoCount > 0 && (
+            <span className="opacity-70">
+              {' · '}
+              {t('security.summary_info', { count: infoCount, defaultValue: '{{count}} info' })}
+            </span>
+          )}
           {lastScanCompletedAt && !isScanning && (
             <>
               {' · '}
@@ -191,35 +262,44 @@ export default function SecurityPage({ onOpenSession }: Props) {
               })}
             </>
           )}
+          {activeKinds.length > 0 && (
+            <>
+              {' · '}
+              {t('security.filter_active', {
+                count: activeKinds.length,
+                defaultValue: 'filtered by {{count}} kind(s)',
+              })}
+              {' '}
+              <button
+                type="button"
+                data-testid="security-filter-clear"
+                onClick={clearKindFilter}
+                className="text-warm-muted dark:text-dark-muted hover:text-accent dark:hover:text-accent-dark underline-offset-2 hover:underline transition-colors"
+              >
+                {t('security.filter_clear', { defaultValue: 'clear' })}
+              </button>
+            </>
+          )}
         </span>
-        <button
-          type="button"
-          data-testid="security-toggle-values"
-          onClick={() => setValuesHidden(v => !v)}
-          title={valuesHidden
-            ? t('security.show_values', { defaultValue: 'Show values' })
-            : t('security.hide_values', { defaultValue: 'Hide values (screen-share mode)' })}
-          aria-label={valuesHidden
-            ? t('security.show_values', { defaultValue: 'Show values' })
-            : t('security.hide_values', { defaultValue: 'Hide values (screen-share mode)' })}
-          aria-pressed={valuesHidden}
-          className={`inline-flex items-center justify-center w-5 h-5 rounded transition-colors ${
-            valuesHidden
-              ? 'text-accent dark:text-accent-dark bg-accent-bg dark:bg-accent-bg-dark'
-              : 'text-warm-faint dark:text-dark-muted hover:bg-warm-surface2 dark:hover:bg-dark-surface2 hover:text-warm-text dark:hover:text-dark-text'
-          }`}
-        >
-          {valuesHidden ? <EyeOff size={13} strokeWidth={1.6} aria-hidden /> : <Eye size={13} strokeWidth={1.6} aria-hidden />}
-        </button>
         <button
           type="button"
           data-testid="security-rescan-all"
           onClick={handleRescanAll}
+          disabled={rescanInFlight}
           title={t('security.rescanAll', { defaultValue: 'Rescan all' })}
           aria-label={t('security.rescanAll', { defaultValue: 'Rescan all' })}
-          className="inline-flex items-center justify-center w-5 h-5 rounded text-warm-faint dark:text-dark-muted hover:bg-warm-surface2 dark:hover:bg-dark-surface2 hover:text-warm-text dark:hover:text-dark-text transition-colors"
+          className={`flex-none inline-flex items-center justify-center w-5 h-5 rounded transition-colors duration-75 ${
+            rescanInFlight
+              ? 'text-accent dark:text-accent-dark cursor-wait'
+              : 'text-warm-faint dark:text-dark-muted hover:bg-warm-surface2 dark:hover:bg-dark-surface2 hover:text-warm-text dark:hover:text-dark-text'
+          }`}
         >
-          <RotateCw size={13} strokeWidth={1.6} aria-hidden />
+          <RotateCw
+            size={13}
+            strokeWidth={1.75}
+            className={rescanInFlight ? 'animate-spin' : ''}
+            aria-hidden
+          />
         </button>
       </div>
 
@@ -236,60 +316,129 @@ export default function SecurityPage({ onOpenSession }: Props) {
               {isScanning && scanStatus && (
                 <ScanBanner status={scanStatus} backfillStart={backfillStart} />
               )}
+              {!isScanning && scanResult && (
+                <ScanResultBanner
+                  result={scanResult}
+                  onDismiss={() => setScanResult(null)}
+                />
+              )}
 
               {highCats.length > 0 && (
-                <section className="mb-5">
-                  <SectionHeader
+                <section className="mb-3" data-testid="security-high-section">
+                  <CollapsibleHeader
+                    expanded={showHigh}
+                    onToggle={() => setShowHigh(v => !v)}
+                    testid="security-toggle-high"
                     label={t('security.severity_high', { defaultValue: 'High · credentials' })}
                     count={highCount}
                     leading={<AlertTriangle size={11} strokeWidth={1.75} className="text-accent dark:text-accent-dark" aria-hidden />}
+                    preview={{ rows: highCats }}
                   />
-                  <KindGrid
-                    rows={highCats}
-                    tone="high"
-                    activeKind={parsed.filter.kind ?? null}
-                    onSelect={selectKindFilter}
-                    onBulkPurge={(k) => void openBulkPurge(k)}
-                  />
+                  {showHigh && (
+                    <KindGrid
+                      rows={highCats}
+                      tone="high"
+                      activeKinds={activeKindSet}
+                      onToggle={toggleKindFilter}
+                      onBulkPurge={(k) => void openBulkPurge(k)}
+                    />
+                  )}
                 </section>
               )}
 
               {lowCats.length > 0 && (
-                <section className="mb-5">
-                  <SectionHeader
+                <section className="mb-3" data-testid="security-low-section">
+                  <CollapsibleHeader
+                    expanded={showLow}
+                    onToggle={() => setShowLow(v => !v)}
+                    testid="security-toggle-low"
                     label={t('security.severity_low', { defaultValue: 'Low · identity' })}
                     count={lowCount}
+                    leading={<AlertTriangle size={11} strokeWidth={1.75} className="text-warm-faint dark:text-dark-muted" aria-hidden />}
+                    preview={{ rows: lowCats }}
                   />
-                  <KindGrid
-                    rows={lowCats}
-                    tone="default"
-                    activeKind={parsed.filter.kind ?? null}
-                    onSelect={selectKindFilter}
-                    onBulkPurge={(k) => void openBulkPurge(k)}
-                  />
+                  {showLow && (
+                    <KindGrid
+                      rows={lowCats}
+                      tone="default"
+                      activeKinds={activeKindSet}
+                      onToggle={toggleKindFilter}
+                      onBulkPurge={(k) => void openBulkPurge(k)}
+                    />
+                  )}
                 </section>
               )}
 
-              {parsed.filter.kind && (
-                <div className="flex items-center gap-2 mb-3 pt-1">
-                  <span className="text-[11px] font-semibold leading-[14px] text-warm-muted dark:text-dark-muted">
-                    {t('security.filter_label', { defaultValue: 'Filter' })}
-                  </span>
-                  <FilterPill onClear={clearKindFilter}>kind:{parsed.filter.kind}</FilterPill>
-                  <span className="font-mono text-[11px] text-warm-faint dark:text-dark-muted tabular-nums">
-                    {t('security.filter_count', {
-                      count: risk.find(r => r.kind === parsed.filter.kind)?.count ?? 0,
-                      defaultValue: 'showing {{count}} findings',
-                    })}
-                  </span>
-                </div>
+              {infoCats.length > 0 && (
+                <section className="mb-4" data-testid="security-info-section">
+                  <CollapsibleHeader
+                    expanded={showInfo}
+                    onToggle={() => setShowInfo(v => !v)}
+                    testid="security-toggle-info"
+                    label={t('security.severity_info', { defaultValue: 'Info · environment' })}
+                    count={infoCount}
+                    leading={<Info size={11} strokeWidth={1.75} className="text-warm-faint dark:text-dark-muted" aria-hidden />}
+                    preview={{ rows: infoCats }}
+                  />
+                  {showInfo && (
+                    <>
+                      <KindGrid
+                        rows={infoCats}
+                        tone="info"
+                        activeKinds={activeKindSet}
+                        onToggle={toggleKindFilter}
+                        onBulkPurge={(k) => void openBulkPurge(k)}
+                      />
+                      <p className="mt-2 text-[11px] text-warm-faint dark:text-dark-muted">
+                        {t('security.info_footnote', {
+                          defaultValue: 'Signals are kept as audit records but never surfaced as standalone findings. Click a tile to add it to the filter; the chip will light up and the sessions list will include matching findings.',
+                        })}
+                      </p>
+                    </>
+                  )}
+                </section>
               )}
 
+              {/* No filter-pill row: when kinds are selected, the tiles
+                  themselves carry the selected state (accent ring) and
+                  the meta row shows `filtered by N · clear`. Click a
+                  lit tile again to drop it from the filter. */}
+
               <section className="mb-5">
-                <SectionHeader
-                  label={t('security.sessions_with_findings', { defaultValue: 'Sessions with active findings' })}
-                  count={sessions.length}
-                />
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-[13px] font-medium leading-[18px] text-warm-text dark:text-dark-text">
+                    {t('security.sessions_with_findings', { defaultValue: 'Sessions with active findings' })}
+                  </span>
+                  <span className="font-mono text-[12px] text-warm-faint dark:text-dark-muted tabular-nums ml-1">
+                    {sessions.length}
+                  </span>
+                  {/* Icon-only toggle, tooltip via title.
+                   *  Eye = values currently visible, click to hide;
+                   *  EyeOff = values blurred, click to reveal. */}
+                  {sessions.length > 0 && (
+                    <button
+                      type="button"
+                      data-testid="security-toggle-values"
+                      onClick={() => setValuesHidden(v => !v)}
+                      aria-pressed={valuesHidden}
+                      aria-label={valuesHidden
+                        ? t('security.show_values_full', { defaultValue: 'Show values' })
+                        : t('security.hide_values_full', { defaultValue: 'Hide values for screen-share' })}
+                      title={valuesHidden
+                        ? t('security.show_values_full', { defaultValue: 'Show values' })
+                        : t('security.hide_values_full', { defaultValue: 'Hide values for screen-share' })}
+                      className={`ml-auto inline-flex items-center justify-center w-5 h-5 rounded transition-colors duration-75 ${
+                        valuesHidden
+                          ? 'bg-accent-bg dark:bg-accent-bg-dark text-accent dark:text-accent-dark'
+                          : 'text-warm-faint dark:text-dark-muted hover:bg-warm-surface2 dark:hover:bg-dark-surface2 hover:text-warm-text dark:hover:text-dark-text'
+                      }`}
+                    >
+                      {valuesHidden
+                        ? <EyeOff size={13} strokeWidth={1.75} aria-hidden />
+                        : <Eye size={13} strokeWidth={1.75} aria-hidden />}
+                    </button>
+                  )}
+                </div>
                 {sessions.length === 0 ? (
                   <p className="font-mono text-[11px] text-warm-faint dark:text-dark-muted py-2">
                     {t('security.empty_sessions', { defaultValue: 'No sessions match this filter.' })}
@@ -300,9 +449,10 @@ export default function SecurityPage({ onOpenSession }: Props) {
                       <SessionCard
                         key={s.id}
                         session={s}
-                        activeKindFilter={parsed.filter.kind ?? null}
+                        activeKinds={activeKinds}
                         valuesHidden={valuesHidden}
                         onOpen={() => onOpenSession(s.sessionUuid)}
+                        {...(onShareSession ? { onShare: () => onShareSession(s.sessionUuid) } : {})}
                         onRefresh={refresh}
                       />
                     ))}
@@ -310,14 +460,6 @@ export default function SecurityPage({ onOpenSession }: Props) {
                 )}
               </section>
 
-              {infoCats.length > 0 && (
-                <InfoDrawer
-                  expanded={showInfo}
-                  onToggle={() => setShowInfo(v => !v)}
-                  rows={infoCats}
-                  total={infoCount}
-                />
-              )}
             </>
           )}
         </div>
@@ -346,72 +488,204 @@ function ScanBanner({ status, backfillStart }: { status: ScanStatus; backfillSta
   return (
     <div
       data-testid="security-scan-banner"
-      className="grid items-center gap-3 mb-5 px-4 py-2.5 rounded-lg bg-accent-bg dark:bg-accent-bg-dark border border-accent-bg-strong dark:border-accent-bg-strong-dark"
+      className="relative grid items-center gap-3 mb-5 px-4 py-2.5 rounded-lg bg-accent-bg dark:bg-accent-bg-dark border border-accent-bg-strong dark:border-accent-bg-strong-dark overflow-hidden"
       style={{ gridTemplateColumns: 'auto 1fr auto' }}
     >
-      <span className="relative inline-flex items-center justify-center w-2 h-2 rounded-full bg-accent dark:bg-accent-dark">
-        <span className="absolute inset-[-3px] rounded-full bg-accent dark:bg-accent-dark opacity-20 animate-ping" />
+      <span className="relative inline-flex items-center justify-center w-4 h-4">
+        <span className="absolute inset-1 rounded-full bg-accent dark:bg-accent-dark" />
+        <span className="absolute inset-0 rounded-full bg-accent dark:bg-accent-dark opacity-30 animate-ping" />
       </span>
-      <div className="flex flex-col gap-1.5 min-w-0">
-        <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-[11px] font-semibold leading-[14px] text-accent dark:text-accent-dark">
-            {t('security.scanning', { defaultValue: 'Scanning' })}
-          </span>
-          <span className="font-mono text-[11px] text-accent dark:text-accent-dark tabular-nums">
-            {t('security.scanning_progress', {
-              done, total,
-              defaultValue: '{{done}} / {{total}} sessions',
-            })}
-          </span>
-          <span className="font-mono text-[11px] text-warm-muted dark:text-dark-muted tabular-nums">
-            {status.currentProfile}
-          </span>
-        </div>
-        <div
-          className="relative h-1 rounded-full overflow-hidden"
-          style={{ background: 'rgba(200,90,0,0.12)' }}
-        >
-          <div
-            className="absolute inset-y-0 left-0 bg-accent dark:bg-accent-dark rounded-full transition-[width] duration-300"
-            style={{ width: `${pct}%` }}
-          />
-        </div>
+      <div className="flex items-baseline gap-2 flex-wrap min-w-0">
+        <span className="text-[13px] font-medium text-accent dark:text-accent-dark">
+          {t('security.scanning', { defaultValue: 'Scanning' })}
+        </span>
+        <span className="font-mono text-[11px] text-warm-muted dark:text-dark-muted tabular-nums">
+          {t('security.scanning_progress', {
+            done, total,
+            defaultValue: '{{done}} / {{total}} sessions',
+          })}
+          {' · '}
+          {status.currentProfile}
+        </span>
       </div>
+      <span aria-hidden />
+      {/* Progress strip pinned to the bottom border — sits inside
+       *  overflow:hidden so the rounded corners clip cleanly. No vertical
+       *  space cost; the banner stays the same height as the result
+       *  variant, so the swap doesn't jolt the layout. */}
+      <div
+        className="absolute left-0 right-0 bottom-0 h-[2px] bg-accent dark:bg-accent-dark transition-[width] duration-300"
+        style={{ width: `${pct}%` }}
+        aria-hidden
+      />
+    </div>
+  )
+}
+
+function ScanResultBanner({
+  result,
+  onDismiss,
+}: {
+  result: { scanned: number; high: number; low: number }
+  onDismiss: () => void
+}) {
+  const { t } = useTranslation()
+  const noFindings = result.high === 0 && result.low === 0
+  return (
+    <div
+      data-testid="security-scan-result-banner"
+      className="relative grid items-center gap-3 mb-5 px-4 py-2.5 rounded-lg bg-warm-surface dark:bg-dark-surface border border-warm-border dark:border-dark-border overflow-hidden"
+      style={{ gridTemplateColumns: 'auto 1fr auto' }}
+    >
+      <span
+        className="inline-flex items-center justify-center w-4 h-4 rounded-full"
+        style={{ background: 'var(--color-status-success)' }}
+      >
+        <Check size={11} strokeWidth={2.2} className="text-white" aria-hidden />
+      </span>
+      <div className="flex items-baseline gap-2 flex-wrap min-w-0">
+        <span className="text-[13px] text-warm-text dark:text-dark-text font-medium">
+          {t('security.scan_done', { defaultValue: 'Scan complete' })}
+        </span>
+        <span className="font-mono text-[11px] tabular-nums text-warm-muted dark:text-dark-muted">
+          {t('security.scan_done_summary', {
+            sessions: result.scanned,
+            defaultValue: '{{sessions}} sessions',
+          })}
+          {' · '}
+          {noFindings ? (
+            t('security.scan_done_clean', { defaultValue: 'nothing high-risk found' })
+          ) : (
+            <>
+              <span className="text-accent dark:text-accent-dark">
+                {t('security.scan_done_high', { count: result.high, defaultValue: '{{count}} high' })}
+              </span>
+              {result.low > 0 && (
+                <>
+                  {' · '}
+                  {t('security.scan_done_low', { count: result.low, defaultValue: '{{count}} low' })}
+                </>
+              )}
+            </>
+          )}
+        </span>
+      </div>
+      <button
+        type="button"
+        data-testid="security-scan-result-dismiss"
+        onClick={onDismiss}
+        title={t('common.close', { defaultValue: 'Close' })}
+        aria-label={t('common.close', { defaultValue: 'Close' })}
+        className="inline-flex items-center justify-center w-5 h-5 rounded text-warm-faint dark:text-dark-muted hover:bg-warm-surface2 dark:hover:bg-dark-surface2 hover:text-warm-text dark:hover:text-dark-text transition-colors"
+      >
+        <X size={13} strokeWidth={1.6} aria-hidden />
+      </button>
     </div>
   )
 }
 
 function SectionHeader({ label, count, leading }: { label: string; count: number; leading?: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-2 mb-2">
+    <div className="flex items-center gap-2 mb-2.5">
       {leading}
-      <span className="text-[11px] font-semibold leading-[14px] text-warm-muted dark:text-dark-muted">
+      <span className="text-[13px] font-medium leading-[18px] text-warm-text dark:text-dark-text">
         {label}
       </span>
-      <span className="font-mono text-[11px] text-warm-faint dark:text-dark-muted tabular-nums ml-1">
+      <span className="font-mono text-[12px] text-warm-faint dark:text-dark-muted tabular-nums ml-1">
         {count}
       </span>
     </div>
   )
 }
 
+function CollapsibleHeader({
+  expanded,
+  onToggle,
+  testid,
+  label,
+  count,
+  leading,
+  trailing,
+  preview,
+}: {
+  expanded: boolean
+  onToggle: () => void
+  testid: string
+  label: string
+  count: number
+  leading?: React.ReactNode
+  trailing?: React.ReactNode
+  /** Rows summarised inline when the section is collapsed. Top-3 kinds
+   *  plus a `+N more` chip — keeps the category grid discoverable
+   *  without making the user expand it. */
+  preview?: { rows: RiskByCategoryRow[]; visibleN?: number }
+}) {
+  const visibleN = preview?.visibleN ?? 3
+  const previewRows = preview?.rows.slice(0, visibleN) ?? []
+  const previewMore = preview ? Math.max(0, preview.rows.length - visibleN) : 0
+  return (
+    <button
+      type="button"
+      data-testid={testid}
+      onClick={onToggle}
+      aria-expanded={expanded}
+      className="w-full flex items-center gap-2 mb-1.5 rounded -ml-1 pl-1 py-0.5 hover:bg-warm-surface dark:hover:bg-dark-surface transition-colors"
+    >
+      {/* Left group: shrinks so the preview truncates instead of
+       *  pushing the chevron off-screen when counts are large. */}
+      <span className="flex-1 min-w-0 inline-flex items-baseline gap-2 overflow-hidden">
+        {leading && <span className="flex-none self-center">{leading}</span>}
+        <span className="flex-none text-[13px] font-medium leading-[18px] text-warm-text dark:text-dark-text">
+          {label}
+        </span>
+        <span className="flex-none font-mono text-[12px] text-warm-faint dark:text-dark-muted tabular-nums">
+          {count}
+        </span>
+        {!expanded && previewRows.length > 0 && (
+          <span
+            data-testid={`${testid}-preview`}
+            className="hidden sm:inline-block truncate font-mono text-[11px] text-warm-faint dark:text-dark-muted"
+          >
+            {previewRows.map((r, i) => (
+              <span key={r.kind}>
+                {i > 0 && <span className="opacity-50"> · </span>}
+                <span className="text-warm-muted dark:text-dark-muted">{r.kind} </span>
+                <span className="tabular-nums">{r.count}</span>
+              </span>
+            ))}
+            {previewMore > 0 && (
+              <span className="opacity-60"> · +{previewMore}</span>
+            )}
+          </span>
+        )}
+      </span>
+      <span className="flex-none inline-flex items-center gap-1.5 text-warm-faint dark:text-dark-muted">
+        {trailing}
+        {expanded
+          ? <ChevronDown size={12} strokeWidth={1.7} aria-hidden />
+          : <ChevronRight size={12} strokeWidth={1.7} aria-hidden />}
+      </span>
+    </button>
+  )
+}
+
 function KindGrid({
   rows,
   tone,
-  activeKind,
-  onSelect,
+  activeKinds,
+  onToggle,
   onBulkPurge,
 }: {
   rows: RiskByCategoryRow[]
   tone: 'high' | 'default' | 'info'
-  activeKind: string | null
-  onSelect: (kind: string) => void
+  activeKinds: ReadonlySet<string>
+  onToggle: (kind: string) => void
   onBulkPurge: (kind: string) => void
 }) {
   return (
     <div
       className="grid gap-1.5"
-      style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(132px, 1fr))' }}
+      style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))' }}
     >
       {rows.map(r => (
         <KindTile
@@ -420,8 +694,8 @@ function KindGrid({
           count={r.count}
           sessions={r.sessions}
           tone={tone}
-          active={activeKind === r.kind}
-          onSelect={() => onSelect(r.kind)}
+          active={activeKinds.has(r.kind)}
+          onSelect={() => onToggle(r.kind)}
           onBulkPurge={() => onBulkPurge(r.kind)}
         />
       ))}
@@ -465,16 +739,18 @@ function KindTile({
       onClick={onSelect}
       role="button"
       tabIndex={0}
+      aria-pressed={active}
+      aria-label={`${kind} · ${count} ${count === 1 ? 'finding' : 'findings'} in ${sessions} ${sessions === 1 ? 'session' : 'sessions'}`}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect() } }}
     >
       <span className="font-mono text-[12px] text-warm-text dark:text-dark-text truncate">
         {kind}
       </span>
-      <span className="flex items-baseline justify-between gap-2">
-        <span className={`font-mono tabular-nums text-[18px] leading-none font-medium tracking-[-0.01em] ${countColor}`}>
+      <span className="flex items-baseline justify-between gap-2 min-w-0">
+        <span className={`font-mono tabular-nums text-[15px] leading-none font-medium tracking-[-0.01em] flex-none ${countColor}`}>
           {count}
         </span>
-        <span className="font-mono text-[10px] text-warm-muted dark:text-dark-muted tabular-nums whitespace-nowrap">
+        <span className="font-mono text-[10px] text-warm-muted dark:text-dark-muted tabular-nums truncate">
           {sessions} {sessions === 1 ? 'session' : 'sessions'}
         </span>
       </span>
@@ -492,62 +768,94 @@ function KindTile({
   )
 }
 
-function FilterPill({ children, onClear }: { children: React.ReactNode; onClear: () => void }) {
-  return (
-    <span
-      data-testid="security-filter-pill"
-      className="inline-flex items-center gap-1.5 h-[22px] pl-2 pr-1.5 rounded bg-accent-bg dark:bg-accent-bg-dark border border-accent-bg-strong dark:border-accent-bg-strong-dark font-mono text-[11px] text-accent dark:text-accent-dark"
-    >
-      {children}
-      <button
-        type="button"
-        onClick={onClear}
-        aria-label="Clear filter"
-        className="inline-flex items-center justify-center w-3.5 h-3.5 rounded text-accent dark:text-accent-dark hover:bg-accent/10"
-      >
-        <X size={10} strokeWidth={2} aria-hidden />
-      </button>
-    </span>
-  )
-}
-
 function SessionCard({
   session,
-  activeKindFilter,
+  activeKinds,
   valuesHidden,
   onOpen,
+  onShare,
   onRefresh,
 }: {
   session: Sess
-  activeKindFilter: string | null
+  activeKinds: readonly string[]
   valuesHidden: boolean
   onOpen: () => void
+  onShare?: () => void
   onRefresh: () => void
 }) {
   const { t } = useTranslation()
   const [findings, setFindings] = useState<FindingRow[] | null>(null)
   const [showAll, setShowAll] = useState(false)
+  // Click-to-collapse on the title row. Default expanded so the user
+  // sees what's inside each card; can fold shut once they've reviewed.
+  const [collapsed, setCollapsed] = useState(false)
+  const [resuming, setResuming] = useState(false)
   const LIMIT = 3
 
+  // Stable key for the dependency array — otherwise array identity
+  // changes every render even when contents are the same.
+  const kindsKey = activeKinds.join('|')
+
   const load = useCallback(async () => {
-    const f: Parameters<typeof securityApi.listFindings>[0] = { sessionId: session.id, state: 'active' }
-    if (activeKindFilter) f.kind = activeKindFilter as typeof f.kind
-    const rows = await securityApi.listFindings(f)
-    setFindings(rows)
-  }, [session.id, activeKindFilter])
+    const f: FindingFilter = { sessionId: session.id, state: 'active' }
+    if (activeKinds.length > 0) {
+      f.kinds = activeKinds as NonNullable<FindingFilter['kinds']>
+    }
+    try {
+      const rows = await securityApi.listFindings(f)
+      setFindings(rows)
+    } catch (err) {
+      // Don't strand the user on the loading skeleton if the IPC call
+      // fails (DB locked, worker dead, etc.). Render as "no findings"
+      // and log so the issue surfaces in devtools.
+      console.error('[security] listFindings failed for session', session.id, err)
+      setFindings([])
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.id, kindsKey])
 
   useEffect(() => { void load() }, [load])
 
+  async function handleCopyId() {
+    try { await navigator.clipboard.writeText(session.sessionUuid) } catch { /* clipboard blocked */ }
+  }
+  async function handleRescan() {
+    await securityApi.rescanSession(session.id)
+  }
+  async function handleResume() {
+    setResuming(true)
+    try {
+      await window.spool.resumeCLI(session.sessionUuid, session.source as never, session.cwd ?? undefined)
+    } finally {
+      setTimeout(() => setResuming(false), 1000)
+    }
+  }
+  const resumeCommand = getSessionResumeCommand(session.source as never, session.sessionUuid, session.cwd)
+  async function handleCopyCommand() {
+    if (!resumeCommand) return
+    try { await navigator.clipboard.writeText(resumeCommand) } catch { /* clipboard blocked */ }
+  }
+
   if (findings === null) {
     return (
-      <article className="py-3 border-b border-warm-border dark:border-dark-border last:border-b-0" />
+      <article className="py-2" />
     )
   }
 
-  const visible = showAll ? findings : findings.slice(0, LIMIT)
-  const hidden = findings.length - visible.length
-  const high = findings.filter(f => f.state === 'active' && isHigh(f.kind)).length
-  const low = findings.filter(f => f.state === 'active' && !isHigh(f.kind)).length
+  // Hide info-tier kinds (absolute-path / ip / internal-host) from the
+  // inline list unless the user has explicitly pinned one as a filter —
+  // info findings are stored as an audit record but have ~98% false-
+  // positive rate, so showing 848 absolute-path rows would drown the
+  // real leaks. The Info drawer at the bottom is where they surface.
+  const allowInfo = activeKinds.some(k => isInfo(k))
+  const reportable = allowInfo
+    ? findings
+    : findings.filter(f => !isInfo(f.kind))
+
+  const visible = showAll ? reportable : reportable.slice(0, LIMIT)
+  const hidden = reportable.length - visible.length
+  const high = reportable.filter(f => f.state === 'active' && isHigh(f.kind)).length
+  const low = reportable.filter(f => f.state === 'active' && !isHigh(f.kind)).length
   const title = session.title?.trim() || t('common.noTitle')
 
   // Match SessionRow's meta format exactly: relative date · N msgs · model
@@ -560,20 +868,35 @@ function SessionCard({
     <article
       data-testid="security-session-row"
       data-session-uuid={session.sessionUuid}
-      className="py-3 border-b border-warm-border dark:border-dark-border last:border-b-0"
+      className="py-2"
     >
-      <header
-        className="group flex items-center gap-2 px-1 cursor-pointer"
-        role="button"
-        tabIndex={0}
-        onClick={onOpen}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen() } }}
-      >
-        <SourceBadge source={session.source} />
-        <span className="flex-1 min-w-0 text-[13px] font-medium text-warm-text dark:text-dark-text truncate group-hover:text-accent dark:group-hover:text-accent-dark transition-colors">
-          {title}
-        </span>
-        <span className="flex items-center gap-2 ml-auto">
+      <header className="group flex items-center gap-2 -ml-1">
+        <button
+          type="button"
+          data-testid="security-session-toggle"
+          onClick={() => setCollapsed(c => !c)}
+          aria-expanded={!collapsed}
+          aria-label={collapsed
+            ? t('common.expand', { defaultValue: 'Expand' })
+            : t('common.collapse', { defaultValue: 'Collapse' })}
+          className="flex-1 min-w-0 flex items-center gap-2 pl-1 pr-1 py-0.5 rounded text-left cursor-default hover:bg-warm-surface dark:hover:bg-dark-surface transition-colors"
+        >
+          <SourceBadge source={session.source} />
+          <span className="flex-1 min-w-0 text-[13px] font-medium text-warm-text dark:text-dark-text truncate">
+            {title}
+          </span>
+          {/* Chevron sits after the title, hidden until hover so the row
+           *  reads as title-first. Slot is always present (no layout
+           *  shift on hover); only its opacity toggles. Whichever
+           *  direction the chevron points is the action it'll perform
+           *  on click — collapsed → expand (▶), expanded → collapse (▼). */}
+          <span className="flex-none inline-flex items-center justify-center w-3.5 h-3.5 text-warm-faint dark:text-dark-muted opacity-0 group-hover:opacity-100 transition-opacity">
+            {collapsed
+              ? <ChevronRight size={12} strokeWidth={1.7} aria-hidden />
+              : <ChevronDown size={12} strokeWidth={1.7} aria-hidden />}
+          </span>
+        </button>
+        <span className="flex-none flex items-center gap-2">
           {high > 0 && (
             <span className="inline-flex items-center gap-[3px] font-mono tabular-nums text-[11px] text-accent dark:text-accent-dark">
               <AlertTriangle size={12} strokeWidth={1.7} aria-hidden />
@@ -586,13 +909,73 @@ function SessionCard({
               {low}
             </span>
           )}
+          <Menu
+            align="right"
+            trigger={({ open, toggle }) => (
+              <button
+                type="button"
+                data-testid="security-session-menu"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={toggle}
+                aria-label={t('common.moreActions', { defaultValue: 'More actions' })}
+                aria-haspopup="menu"
+                aria-expanded={open}
+                className="inline-flex items-center justify-center w-5 h-5 rounded text-warm-muted dark:text-dark-muted hover:bg-warm-surface2 dark:hover:bg-dark-surface2 hover:text-warm-text dark:hover:text-dark-text transition-colors"
+              >
+                <MoreHorizontal size={13} strokeWidth={1.6} aria-hidden />
+              </button>
+            )}
+            items={[
+              {
+                label: t('security.view_session_detail', { defaultValue: 'View session detail' }),
+                icon: <Eye size={14} strokeWidth={1.6} aria-hidden />,
+                onSelect: () => onOpen(),
+              },
+              ...(onShare ? [{
+                label: t('shareEditor.openNew', { defaultValue: 'Edit share draft' }),
+                icon: <SquarePen size={14} strokeWidth={1.6} aria-hidden />,
+                onSelect: () => onShare(),
+              }] : []),
+              {
+                label: resuming
+                  ? t('common.openingTerminal', { defaultValue: 'Opening terminal…' })
+                  : t('session.resume_inTerminal', { defaultValue: 'Continue in terminal' }),
+                icon: resuming
+                  ? <Loader2 size={14} strokeWidth={1.6} className="animate-spin" aria-hidden />
+                  : <SquareTerminal size={14} strokeWidth={1.6} aria-hidden />,
+                onSelect: () => { void handleResume() },
+                disabled: resuming,
+              },
+              ...(resumeCommand ? [{
+                label: t('common.copyResumeCommand', { defaultValue: 'Copy terminal command' }),
+                icon: <Copy size={14} strokeWidth={1.6} aria-hidden />,
+                onSelect: () => { void handleCopyCommand() },
+              }] : []),
+              {
+                label: t('sidebar.copySessionId', { defaultValue: 'Copy session ID' }),
+                icon: <Copy size={14} strokeWidth={1.6} aria-hidden />,
+                onSelect: () => { void handleCopyId() },
+              },
+              {
+                label: t('security.rescan_session', { defaultValue: 'Rescan this session' }),
+                icon: <RotateCw size={14} strokeWidth={1.6} aria-hidden />,
+                onSelect: () => { void handleRescan() },
+              },
+            ]}
+          />
         </span>
       </header>
-      <p className="mt-0.5 mx-1 pl-1 font-mono text-[11px] tabular-nums text-warm-faint dark:text-dark-muted truncate">
+      <p className="mt-0.5 pl-1.5 font-mono text-[11px] tabular-nums text-warm-faint dark:text-dark-muted truncate">
+        {session.projectDisplayName && (
+          <>
+            <span className="text-warm-muted dark:text-dark-muted">{session.projectDisplayName}</span>
+            {' · '}
+          </>
+        )}
         {dateStr} · {msgsStr}{modelStr ? ` · ${modelStr}` : ''}
       </p>
-      {visible.length > 0 && (
-        <div className="mt-1.5 flex flex-col gap-px">
+      {!collapsed && visible.length > 0 && (
+        <div className="mt-1 flex flex-col gap-px">
           {visible.map((f) => (
             <FindingItem
               key={f.id}
@@ -660,6 +1043,26 @@ function FindingItem({
   async function dismiss(scope: 'session' | 'global') {
     await securityApi.dismissFinding(finding.id, scope)
     onChange()
+    // Undo toast — dismiss is the highest-frequency action on this
+    // page (Linear / Gmail set the precedent: cheap actions get a
+    // soft undo, not a modal). Sonner's 4s default is fine for one-
+    // hand workflows; users mass-dismissing a kind can mash-undo as
+    // toasts stack.
+    toast(
+      scope === 'global'
+        ? t('security.dismissed_global_toast', { kind: finding.kind, defaultValue: 'Dismissed {{kind}} everywhere' })
+        : t('security.dismissed_session_toast', { kind: finding.kind, defaultValue: 'Dismissed {{kind}}' }),
+      {
+        action: {
+          label: t('common.undo', { defaultValue: 'Undo' }),
+          onClick: () => {
+            void securityApi.undismissFinding(finding.id)
+              .then(() => onChange())
+              .catch(() => { toast.error(t('security.undo_failed', { defaultValue: 'Could not undo' })) })
+          },
+        },
+      },
+    )
   }
   async function purge() {
     await securityApi.purgeFinding(finding.id)
@@ -694,7 +1097,7 @@ function FindingItem({
       data-finding-id={finding.id}
       data-kind={finding.kind}
       data-state={finding.state}
-      className="group grid items-center gap-3 pl-6 pr-2 py-1 rounded font-mono text-[11px] hover:bg-warm-surface dark:hover:bg-dark-surface transition-colors"
+      className="group grid items-center gap-3 pl-6 pr-2 py-0.5 rounded font-mono text-[11px] hover:bg-warm-surface dark:hover:bg-dark-surface transition-colors"
       style={{ gridTemplateColumns: '14px 110px 1fr auto', opacity: finding.state === 'dismissed' ? 0.5 : 1 }}
     >
       <span className={`justify-self-center w-1 h-1 rounded-full ${bulletClass}`} />
@@ -751,105 +1154,6 @@ function FindingItem({
         </span>
       )}
     </div>
-  )
-}
-
-function InfoDrawer({
-  expanded,
-  onToggle,
-  rows,
-  total,
-}: {
-  expanded: boolean
-  onToggle: () => void
-  rows: RiskByCategoryRow[]
-  total: number
-}) {
-  const { t } = useTranslation()
-  return (
-    <section
-      data-testid="security-info-drawer"
-      className="mt-5 rounded-lg border border-dashed border-warm-border2 dark:border-dark-border2"
-    >
-      <button
-        type="button"
-        data-testid="security-toggle-info"
-        onClick={onToggle}
-        aria-expanded={expanded}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left rounded-lg hover:bg-black/[0.015] dark:hover:bg-white/[0.015] transition-colors"
-      >
-        <span className="text-warm-faint dark:text-dark-muted inline-flex">
-          <Info size={14} strokeWidth={1.5} aria-hidden />
-        </span>
-        <span className="flex flex-col gap-0.5 flex-1 min-w-0">
-          <span className="inline-flex items-center gap-2">
-            <span className="text-[13px] font-medium text-warm-text dark:text-dark-text">
-              {t('security.info_title', { defaultValue: 'Informational signals' })}
-            </span>
-            <span className="font-mono text-[11px] text-warm-faint dark:text-dark-muted tabular-nums">
-              {t('security.info_suppressed', { count: total, defaultValue: '{{count}} suppressed' })}
-            </span>
-          </span>
-          <span className="font-mono text-[11px] text-warm-muted dark:text-dark-muted">
-            {t('security.info_summary', { defaultValue: 'absolute-path · ip · internal-host · audit showed ~98% false-positive rate' })}
-          </span>
-        </span>
-        <Segmented value={expanded ? 'shown' : 'hidden'} />
-      </button>
-      {expanded && (
-        <div className="px-4 pt-3 pb-4 border-t border-dashed border-warm-border2 dark:border-dark-border2">
-          <div
-            className="grid gap-1.5"
-            style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(132px, 1fr))' }}
-          >
-            {rows.map(r => (
-              <KindTile
-                key={r.kind}
-                kind={r.kind}
-                count={r.count}
-                sessions={r.sessions}
-                tone="info"
-                active={false}
-                onSelect={() => {}}
-                onBulkPurge={() => {}}
-              />
-            ))}
-          </div>
-          <p className="mt-2.5 text-[11px] text-warm-muted dark:text-dark-muted">
-            {t('security.info_footnote', {
-              defaultValue: 'Signals are kept as audit records but never surfaced as standalone findings.',
-            })}
-          </p>
-        </div>
-      )}
-    </section>
-  )
-}
-
-function Segmented({ value }: { value: 'shown' | 'hidden' }) {
-  const { t } = useTranslation()
-  const options = [
-    { value: 'hidden', label: t('security.info_hidden', { defaultValue: 'Hidden' }) },
-    { value: 'shown', label: t('security.info_shown', { defaultValue: 'Shown' }) },
-  ] as const
-  return (
-    <span className="inline-flex items-center gap-1.5 ml-auto">
-      {options.map(opt => {
-        const active = opt.value === value
-        return (
-          <span
-            key={opt.value}
-            className={`h-[22px] px-2.5 rounded-md text-[12px] inline-flex items-center transition-colors ${
-              active
-                ? 'bg-accent-bg dark:bg-accent-bg-dark border border-accent dark:border-accent-dark text-accent dark:text-accent-dark font-semibold'
-                : 'border border-transparent text-warm-muted dark:text-dark-muted font-medium'
-            }`}
-          >
-            {opt.label}
-          </span>
-        )
-      })}
-    </span>
   )
 }
 
@@ -941,8 +1245,12 @@ const HIGH_KINDS = new Set([
   'connection-string', 'url-creds', 'api-key', 'jwt', 'bearer',
   'basic-auth', 'env-var', 'generic-secret',
 ])
+const INFO_KINDS = new Set(['absolute-path', 'ip', 'internal-host'])
 function isHigh(kind: string): boolean {
   return HIGH_KINDS.has(kind)
+}
+function isInfo(kind: string): boolean {
+  return INFO_KINDS.has(kind)
 }
 
 function friendlyKind(kind: string): string {
