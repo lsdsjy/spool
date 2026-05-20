@@ -76,7 +76,6 @@ export default function SessionRow({ session, pinned = false, showProject = fals
           <span className="text-sm font-medium text-warm-text dark:text-dark-text truncate">
             {title}
           </span>
-          <SecurityBadge session={session} />
         </div>
         <p className="pl-1.5 text-xs text-warm-faint dark:text-dark-muted truncate">
           {showProject && (
