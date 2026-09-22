@@ -53,6 +53,9 @@ Desktop app (`local/desktop-0.6.3` only):
 ```bash
 git switch local/desktop-0.6.3
 pnpm install                      # electron and the agent SDKs are large; a mirror may stall
+# If install retries forever on @openai/codex, onnxruntime-node, or
+# claude-agent-sdk-darwin-arm64 (mirrors 302 to a CDN that drops the tarball):
+#   printf 'registry=https://registry.npmjs.org/\n' > .npmrc && pnpm install
 cd apps/app
 pnpm run build:deps               # workspace packages the app bundles
 pnpm run build                    # electron-vite build
