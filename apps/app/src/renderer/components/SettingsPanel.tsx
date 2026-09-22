@@ -53,6 +53,7 @@ interface Props {
   codexCount: number | null
   geminiCount: number | null
   opencodeCount: number | null
+  piCount: number | null
   themeEditor: ThemeEditorStateV1
   onThemeEditorChange: (next: ThemeEditorStateV1) => void
   language: LanguagePreference
@@ -228,6 +229,7 @@ export default function SettingsPanel({
   codexCount,
   geminiCount,
   opencodeCount,
+  piCount,
   themeEditor,
   onThemeEditorChange,
   language,
@@ -344,6 +346,7 @@ export default function SettingsPanel({
                 codexCount={codexCount}
                 geminiCount={geminiCount}
                 opencodeCount={opencodeCount}
+                piCount={piCount}
               />
             )}
             {activeTab === 'agent' && <AgentTab />}
@@ -565,11 +568,13 @@ function SourcesTab({
   codexCount,
   geminiCount,
   opencodeCount,
+  piCount,
 }: {
   claudeCount: number | null
   codexCount: number | null
   geminiCount: number | null
   opencodeCount: number | null
+  piCount: number | null
 }) {
   const { t } = useTranslation()
   return (
@@ -594,6 +599,11 @@ function SourcesTab({
           name={getSessionSourceLabel('opencode')}
           color={getSessionSourceColor('opencode')}
           count={opencodeCount}
+        />
+        <BuiltInSource
+          name={getSessionSourceLabel('pi')}
+          color={getSessionSourceColor('pi')}
+          count={piCount}
         />
       </Section>
     </div>

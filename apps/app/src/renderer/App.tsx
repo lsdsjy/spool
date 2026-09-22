@@ -1101,6 +1101,7 @@ export default function App() {
             codexCount={status?.codexSessions ?? null}
             geminiCount={status?.geminiSessions ?? null}
             opencodeCount={status?.opencodeSessions ?? null}
+            piCount={status?.piSessions ?? null}
             themeEditor={themeEditor}
             onThemeEditorChange={setThemeEditor}
             language={language ?? 'system'}
@@ -1354,6 +1355,7 @@ export default function App() {
           codexCount={status?.codexSessions ?? null}
           geminiCount={status?.geminiSessions ?? null}
           opencodeCount={status?.opencodeSessions ?? null}
+          piCount={status?.piSessions ?? null}
           themeEditor={themeEditor}
           onThemeEditorChange={setThemeEditor}
           language={language ?? 'system'}

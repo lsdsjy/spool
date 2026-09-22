@@ -18,7 +18,8 @@ import {
   type UpsertSessionMode,
 } from '../db/queries.js'
 import { loadClaudeSession, decodeProjectSlug } from '../parsers/claude.js'
-import { loadCodexSession, CODEX_INDEX_VERSION } from '../parsers/codex.js'
+import { loadCodexSession, loadCodexThreadMeta, CODEX_INDEX_VERSION } from '../parsers/codex.js'
+import type { CodexSubagentRef } from '../parsers/codex.js'
 import { loadGeminiSession } from '../parsers/gemini.js'
 import {
   getOpenCodeSessionIndexedMtime,
@@ -67,7 +68,19 @@ export class Syncer {
   private db: Database.Database
   private onProgress: SyncEventCallback | undefined
   private onSessionChanged: SessionChangedCallback | undefined
+  /** Root rollouts get their spawned children folded in; a child rollout
+   *  itself never owns children (codex trees are shallow). */
+  private codexSubagentsForFile(filePath: string): CodexSubagentRef[] {
+    const threadId = this.codexThreadIdByPath.get(filePath)
+    return threadId ? (this.codexSubagentsByParent.get(threadId) ?? []) : []
+  }
+
   private codexTitleIndex: Map<string, string> = new Map()
+  /** Child rollouts by parent thread id — codex spawns a separate rollout per
+   *  subagent; those are folded into the parent instead of indexed alone. */
+  private codexSubagentsByParent: Map<string, CodexSubagentRef[]> = new Map()
+  /** Thread id per rollout file, so a root can look up its children by id. */
+  private codexThreadIdByPath: Map<string, string> = new Map()
 
   constructor(
     db: Database.Database,
@@ -97,6 +110,9 @@ export class Syncer {
 
     const knownMtimes = getAllSessionMtimes(this.db)
     this.codexTitleIndex = loadCodexSessionIndex()
+    const codexThreads = buildCodexThreadIndex(files)
+    this.codexSubagentsByParent = codexThreads.subagentsByParent
+    this.codexThreadIdByPath = codexThreads.threadIdByPath
 
     const pendingFiles = files.flatMap((f) => {
       const existing = knownMtimes.get(f.path)
@@ -304,7 +320,7 @@ export class Syncer {
         source === 'claude'
           ? loadClaudeSession(filePath)
           : source === 'codex'
-            ? loadCodexSession(filePath)
+            ? loadCodexSession(filePath, { subagents: this.codexSubagentsForFile(filePath) })
             : source === 'gemini'
               ? loadGeminiSession(filePath)
               : source === 'pi'
@@ -644,6 +660,35 @@ function shouldTraverseGeminiDir(parentDir: string, fullPath: string, entryName:
   if (basename(parentDir) === 'tmp') return true
   if (/(?:^|\/)chats(?:\/|$)/.test(parentDir)) return true
   return existsSync(join(fullPath, 'chats'))
+}
+
+/** Index codex rollouts by thread: `subagentsByParent` answers "which child
+ *  rollouts belong to this parent thread", `threadIdByPath` answers "which
+ *  thread does this file hold". Only the leading session_meta record is read,
+ *  so this stays cheap even with thousands of rollouts. */
+function buildCodexThreadIndex(files: Array<{ path: string; source: SessionSource }>): {
+  subagentsByParent: Map<string, CodexSubagentRef[]>
+  threadIdByPath: Map<string, string>
+} {
+  const subagentsByParent = new Map<string, CodexSubagentRef[]>()
+  const threadIdByPath = new Map<string, string>()
+
+  for (const file of files) {
+    if (file.source !== 'codex') continue
+    const meta = loadCodexThreadMeta(file.path)
+    if (!meta) continue
+    threadIdByPath.set(file.path, meta.sessionUuid)
+    if (!meta.parentThreadId) continue
+    const siblings = subagentsByParent.get(meta.parentThreadId) ?? []
+    siblings.push({
+      filePath: file.path,
+      label: meta.label || `subagent ${meta.sessionUuid.slice(0, 8)}`,
+      sessionUuid: meta.sessionUuid,
+    })
+    subagentsByParent.set(meta.parentThreadId, siblings)
+  }
+
+  return { subagentsByParent, threadIdByPath }
 }
 
 function loadCodexSessionIndex(): Map<string, string> {

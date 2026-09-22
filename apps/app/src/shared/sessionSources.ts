@@ -23,6 +23,12 @@ const SESSION_SOURCE_META = {
     color: '#8A6F3D',
     colorDark: '#C9A761',
   },
+  pi: {
+    label: 'Pi',
+    shortLabel: 'pi',
+    color: '#A55A7A',
+    colorDark: '#D88AAA',
+  },
 } as const
 
 export function getSessionSourceColor(source: string): string {

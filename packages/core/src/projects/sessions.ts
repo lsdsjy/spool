@@ -68,11 +68,22 @@ export function listSessionsByIdentity(
 
 export function listRecentSessionsPage(
   db: Database.Database,
-  options: { limit?: number; cursor?: SessionsCursor; search?: string } = {},
+  options: {
+    limit?: number
+    cursor?: SessionsCursor
+    search?: string
+    /** Restrict to these providers, e.g. the sidebar's per-agent sections. */
+    sources?: SessionSource[]
+  } = {},
 ): SessionsPage {
-  const { limit = DEFAULT_PAGE_SIZE, cursor, search } = options
+  const { limit = DEFAULT_PAGE_SIZE, cursor, search, sources } = options
   const conditions: string[] = ['s.message_count > 0']
   const params: unknown[] = []
+  if (sources && sources.length > 0) {
+    const placeholders = sources.map(() => '?').join(',')
+    conditions.push(`src.name IN (${placeholders})`)
+    params.push(...sources)
+  }
   appendSessionSearchCondition(conditions, params, search)
   if (cursor) {
     const c = cursorWhere('recent', cursor)

@@ -1,5 +1,11 @@
 # Spool
 
+> **Personal fork.** This is `lsdsjy/spool`, forked from
+> [`spool-lab/spool`](https://github.com/spool-lab/spool) — renamed upstream to
+> [`paperboytm/spool`](https://github.com/paperboytm/spool), which is what GitHub lists as
+> the fork parent. Upstream is the source of truth. See [FORK.md](./FORK.md) for what this
+> fork changes, which branch to build from, and how to sync with upstream.
+
 Share, read, and continue agent sessions.
 
 Spool turns work done with coding agents into durable web pages that other people can understand and resume. An author shares a real Session—not a screenshot or reconstructed recap—and readers can move from Summary to conversation, tool activity, files, and diff before continuing the work in their own agent.

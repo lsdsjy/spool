@@ -11,7 +11,7 @@ export type DiscoverySessionProvider = (typeof DISCOVERY_SESSION_PROVIDERS)[numb
 
 export const SESSION_PROVIDER_LABELS: Record<SessionProvider, string> = {
   claude: 'Claude Code',
-  codex: 'Codex CLI',
+  codex: 'Codex',
   gemini: 'Gemini CLI',
   opencode: 'OpenCode',
   pi: 'Pi',

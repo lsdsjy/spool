@@ -461,9 +461,71 @@ const INTERNAL_CODEX_SESSION_MARKERS = [
   '"risk_level":"low","risk_score"',
 ] as const
 
+export const CODEX_SUBAGENT_HEADER_PREFIX = 'Codex subagent:'
+export const CODEX_SUBAGENT_GROUP_PREFIX = 'codex-subagent:'
+
+/** A child rollout (thread_spawn subagent) folded into its parent thread.
+ *  Mirrors OpenCode's subagent handling: the child never becomes a Session of
+ *  its own, its messages are embedded under the parent. */
+export interface CodexSubagentMessages {
+  /** Display label, e.g. `@worker · /root/account_frontend_coverage`. */
+  label: string
+  /** Subagent thread id, used for uuid namespacing and the group key. */
+  sessionUuid: string
+  messages: ParsedMessage[]
+}
+
+export interface ParseCodexSessionOptions {
+  /** Child rollouts to embed into this (parent) session. */
+  subagents?: CodexSubagentMessages[]
+  /** Read a child rollout's own messages: skips the subagent filter that
+   *  otherwise keeps children out of the index. */
+  allowSubagentFile?: boolean
+}
+
+/** Descriptor codex writes into `session_meta.source.subagent` when a thread
+ *  was spawned by another thread, e.g.
+ *  `{ thread_spawn: { parent_thread_id, agent_path, agent_nickname, agent_role } }`.
+ *  Guardian (`{ other: 'guardian' }`) is the internal assessment reviewer and
+ *  is handled separately. */
+export interface CodexSubagentInfo {
+  parentThreadId: string | null
+  label: string
+}
+
+export function readCodexSubagentInfo(source: unknown): CodexSubagentInfo | null {
+  if (!source || typeof source !== 'object') return null
+  const subagent = (source as Record<string, unknown>)['subagent']
+  if (!subagent || typeof subagent !== 'object') return null
+  const record = subagent as Record<string, unknown>
+  if (record['other'] !== undefined) return null
+
+  const spawnRaw = record['thread_spawn']
+  const spawn =
+    spawnRaw && typeof spawnRaw === 'object' ? (spawnRaw as Record<string, unknown>) : undefined
+
+  const parentThreadId =
+    typeof spawn?.['parent_thread_id'] === 'string' && spawn['parent_thread_id'].trim()
+      ? (spawn['parent_thread_id'] as string)
+      : null
+
+  const title = subagentTitle(spawn)
+  return { parentThreadId, label: title }
+}
+
+function subagentTitle(spawn: Record<string, unknown> | undefined): string {
+  if (!spawn) return 'subagent'
+  const role = typeof spawn['agent_role'] === 'string' ? spawn['agent_role'].trim() : ''
+  const nickname = typeof spawn['agent_nickname'] === 'string' ? spawn['agent_nickname'].trim() : ''
+  const path = typeof spawn['agent_path'] === 'string' ? spawn['agent_path'].trim() : ''
+  const head = role ? `@${role}` : nickname ? `@${nickname}` : 'subagent'
+  return path ? `${head} · ${path}` : head
+}
+
 export function parseCodexSessionLines(
   lines: Iterable<string>,
   filePath: string,
+  options: ParseCodexSessionOptions = {},
 ): ParseProviderResult {
   const eventMessages: ParsedMessage[] = []
   const responseMessages: ParsedMessage[] = []
@@ -471,6 +533,7 @@ export function parseCodexSessionLines(
   let cwd = ''
   let model = ''
   let isInternalAssessmentSession = false
+  let subagentInfo: CodexSubagentInfo | null = null
 
   // Extract UUID from filename: rollout-2026-03-23T17-13-24-{uuid}.jsonl
   //
@@ -504,6 +567,10 @@ export function parseCodexSessionLines(
       if (payload['cwd']) cwd = payload['cwd'] as string
       const source = payload['source']
       if (isGuardianSubagentSource(source)) isInternalAssessmentSession = true
+      // Spawned child threads stay under their parent: they are never indexed
+      // as standalone Sessions, their messages are embedded instead.
+      const info = readCodexSubagentInfo(source)
+      if (info && !subagentInfo) subagentInfo = info
       continue
     }
 
@@ -604,10 +671,18 @@ export function parseCodexSessionLines(
   }
 
   if (isInternalAssessmentSession) return { kind: 'filtered' }
-  if (messages.length === 0) return { kind: 'skipped' }
+  if (subagentInfo && !options.allowSubagentFile) return { kind: 'filtered' }
+  if (messages.length === 0 && (options.subagents ?? []).length === 0) {
+    return { kind: 'skipped' }
+  }
 
-  // Re-number seq
-  messages = messages.map((m, i) => ({ ...m, seq: i }))
+  for (const subagent of options.subagents ?? []) {
+    if (subagent.messages.length === 0) continue
+    messages.push(...foldSubagentMessages(subagent))
+  }
+
+  // Re-number seq, oldest first so the embedded child turns land in order.
+  messages = messages.sort(compareCodexMessages).map((m, i) => ({ ...m, seq: i }))
 
   const firstUserMsg = messages.find((m) => m.role === 'user' && !m.isSidechain)
   const title = firstUserMsg?.contentText.slice(0, 120) ?? '(no title)'
@@ -636,6 +711,39 @@ export function parseCodexSessionLines(
 function baseName(path: string): string {
   const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
   return idx === -1 ? path : path.slice(idx + 1)
+}
+
+/** Namespace a child rollout's messages under its own id and tag them with
+ *  the shared group key, so the reader can nest them under one subagent run. */
+function foldSubagentMessages(subagent: CodexSubagentMessages): ParsedMessage[] {
+  const groupKey = `${CODEX_SUBAGENT_GROUP_PREFIX}${subagent.sessionUuid}`
+  const startedAt = subagent.messages[0]?.timestamp ?? new Date().toISOString()
+  const messages = subagent.messages.map((message) => ({
+    ...message,
+    uuid: `${subagent.sessionUuid}:${message.uuid}`,
+    parentUuid: groupKey,
+    isSidechain: true,
+  }))
+  return [
+    {
+      uuid: `${subagent.sessionUuid}:header`,
+      parentUuid: groupKey,
+      role: 'system',
+      contentText: `${CODEX_SUBAGENT_HEADER_PREFIX} ${subagent.label}`,
+      timestamp: startedAt,
+      isSidechain: true,
+      toolNames: [],
+      seq: 0,
+    },
+    ...messages,
+  ]
+}
+
+function compareCodexMessages(a: ParsedMessage, b: ParsedMessage): number {
+  const byTimestamp = a.timestamp.localeCompare(b.timestamp)
+  if (byTimestamp !== 0) return byTimestamp
+  if (a.isSidechain !== b.isSidechain) return a.isSidechain ? 1 : -1
+  return a.uuid.localeCompare(b.uuid)
 }
 
 function isGuardianSubagentSource(source: unknown): boolean {
