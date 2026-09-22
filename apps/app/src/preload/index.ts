@@ -28,6 +28,7 @@ import type {
   Page,
   BackupFileInfo,
   DeleteBackupsResult,
+  SessionSourceActivity,
 } from '@spool-lab/core'
 import type { SensitiveKind } from '@spool-lab/redact'
 import { contextBridge, ipcRenderer } from 'electron'
@@ -138,8 +139,14 @@ const api = {
   searchPreview: (query: string, limit?: number, source?: string): Promise<SearchResult[]> =>
     ipcRenderer.invoke('spool:search-preview', { query, limit, source }),
 
-  listSessions: (options?: { limit?: number; cursor?: SessionsCursor }): Promise<SessionsPage> =>
-    ipcRenderer.invoke('spool:list-sessions', options ?? {}),
+  listSessions: (options?: {
+    limit?: number
+    cursor?: SessionsCursor
+    sources?: SessionSource[]
+  }): Promise<SessionsPage> => ipcRenderer.invoke('spool:list-sessions', options ?? {}),
+
+  listSourceActivity: (): Promise<SessionSourceActivity[]> =>
+    ipcRenderer.invoke('spool:list-source-activity'),
 
   listProjectGroups: (): Promise<ProjectGroup[]> => ipcRenderer.invoke('spool:list-project-groups'),
 

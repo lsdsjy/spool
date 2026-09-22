@@ -4,10 +4,16 @@ export {
   parseCodexSessionLines,
   parsePortableSessionText,
   parseSessionText,
+  readCodexSubagentInfo,
+  CODEX_SUBAGENT_GROUP_PREFIX,
+  CODEX_SUBAGENT_HEADER_PREFIX,
   PORTABLE_MESSAGE_TYPE,
   serializePortableSession,
 } from './messages.js'
 export type {
+  CodexSubagentInfo,
+  CodexSubagentMessages,
+  ParseCodexSessionOptions,
   ParseProviderResult,
   ParsedMessage,
   ParsedProviderSession,

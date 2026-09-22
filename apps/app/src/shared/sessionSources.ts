@@ -6,7 +6,7 @@ const SESSION_SOURCE_META = {
     colorDark: '#E89A7C',
   },
   codex: {
-    label: 'Codex CLI',
+    label: 'Codex',
     shortLabel: 'codex',
     color: '#4A9670',
     colorDark: '#7CC9A2',
@@ -22,6 +22,12 @@ const SESSION_SOURCE_META = {
     shortLabel: 'opencode',
     color: '#8A6F3D',
     colorDark: '#C9A761',
+  },
+  pi: {
+    label: 'Pi',
+    shortLabel: 'pi',
+    color: '#A55A7A',
+    colorDark: '#D88AAA',
   },
 } as const
 

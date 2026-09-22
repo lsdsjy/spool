@@ -1,4 +1,4 @@
-import type { FragmentResult, SearchResult, StatusInfo } from '@spool-lab/core'
+import type { FragmentResult, SearchResult, SessionSource, StatusInfo } from '@spool-lab/core'
 import type { Message, Session, ShareDraftListItem, ShareDraftSourceKind } from '@spool-lab/core'
 import type { ProjectSessionSortOrder } from '@spool-lab/core'
 import {
@@ -37,6 +37,7 @@ import FragmentResults from './components/FragmentResults.js'
 import HubShareDialog from './components/hub-share-dialog.js'
 import LibraryLanding from './components/LibraryLanding.js'
 import ProjectView from './components/ProjectView.js'
+import AgentView from './components/AgentView.js'
 import type { ScopeValue } from './components/ScopeSelector.js'
 import { type SearchMode } from './components/SearchBar.js'
 import SearchOverlay from './components/SearchOverlay.js'
@@ -141,6 +142,8 @@ export default function App() {
   const deferredResults = useDeferredValue(results)
   const [lastCompletedPreviewQuery, setLastCompletedPreviewQuery] = useState('')
   const [activeProjectKey, setActiveProjectKey] = useState<string | null>(null)
+  /** Sidebar Agents selection: one provider's Sessions, across projects. */
+  const [activeSource, setActiveSource] = useState<SessionSource | null>(null)
   const [activeProjectName, setActiveProjectName] = useState<string | null>(null)
   const [searchOverlayOpen, setSearchOverlayOpen] = useState(false)
   const [searchScopeProject, setSearchScopeProject] = useState<ScopeValue | null>(null)
@@ -984,7 +987,19 @@ export default function App() {
       activeIdentityKey={activeProjectKey}
       activeSessionUuid={view === 'session' ? selectedSession : null}
       isLibraryActive={isHomeMode}
+      activeSource={activeSource}
+      onSelectSource={(source) => {
+        setActiveSource(source)
+        setActiveProjectKey(null)
+        setActiveProjectName(null)
+        setHomeMode(false)
+        setSelectedSession(null)
+        setTargetMessageId(null)
+        setView('search')
+        setQuery('')
+      }}
       onSelectProject={(key) => {
+        setActiveSource(null)
         setActiveProjectKey(key)
         setHomeMode(false)
         setSelectedSession(null)
@@ -994,6 +1009,7 @@ export default function App() {
       }}
       onSelectSession={handleOpenSession}
       onSelectHome={() => {
+        setActiveSource(null)
         setActiveProjectKey(null)
         setHomeMode(true)
         setSelectedSession(null)
@@ -1002,6 +1018,7 @@ export default function App() {
         setQuery('')
       }}
       onSelectShares={() => {
+        setActiveSource(null)
         setActiveProjectKey(null)
         setHomeMode(false)
         setSelectedSession(null)
@@ -1013,6 +1030,7 @@ export default function App() {
       onSelectSecurity={() => {
         setSelectedSession(null)
         setTargetMessageId(null)
+        setActiveSource(null)
         setActiveProjectKey(null)
         setActiveProjectName(null)
         setHomeMode(false)
@@ -1242,6 +1260,13 @@ export default function App() {
                       onCopySessionId={handleCopySessionId}
                       onBack={handleBack}
                       onShare={handleStartShareFromSession}
+                    />
+                  ) : activeSource ? (
+                    <AgentView
+                      source={activeSource}
+                      onOpenSession={handleOpenSession}
+                      onCopySessionId={handleCopySessionId}
+                      onShare={handleStartShareFromUuid}
                     />
                   ) : showProjectView && activeProjectKey ? (
                     <ProjectView
