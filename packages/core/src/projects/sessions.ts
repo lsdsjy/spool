@@ -66,6 +66,32 @@ export function listSessionsByIdentity(
   return executePage(db, conditions, params, sortOrder, limit)
 }
 
+/** Per-provider recency + volume, used by the sidebar's agent list so the
+ *  most recently used agents sort first. */
+export interface SessionSourceActivity {
+  source: SessionSource
+  sessionCount: number
+  lastSessionAt: string
+}
+
+export function listSessionSourceActivity(db: Database.Database): SessionSourceActivity[] {
+  const rows = db
+    .prepare(
+      `SELECT src.name AS source, COUNT(*) AS cnt, MAX(s.started_at) AS last_at
+         FROM sessions s
+         JOIN sources src ON src.id = s.source_id
+        WHERE s.message_count > 0
+        GROUP BY src.name`,
+    )
+    .all() as Array<{ source: SessionSource; cnt: number; last_at: string }>
+
+  return rows.map((row) => ({
+    source: row.source,
+    sessionCount: row.cnt,
+    lastSessionAt: row.last_at,
+  }))
+}
+
 export function listRecentSessionsPage(
   db: Database.Database,
   options: {

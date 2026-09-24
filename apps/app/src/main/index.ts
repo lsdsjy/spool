@@ -56,6 +56,7 @@ import {
   getPinnedUuids,
   listPinnedSessions,
   listProjectGroups,
+  listSessionSourceActivity,
   listSessionsByIdentity,
   listPinnedSessionsByIdentity,
   listProjectDirectoryCounts,
@@ -896,10 +897,14 @@ ipcMain.handle(
 
 ipcMain.handle(
   'spool:list-sessions',
-  (_e, args: { limit?: number; cursor?: SessionsCursor } = {}) => {
+  (_e, args: { limit?: number; cursor?: SessionsCursor; sources?: SessionSource[] } = {}) => {
     return listRecentSessionsPage(db, args)
   },
 )
+
+ipcMain.handle('spool:list-source-activity', () => {
+  return listSessionSourceActivity(db)
+})
 
 ipcMain.handle('spool:list-project-groups', () => {
   return listProjectGroups(db)

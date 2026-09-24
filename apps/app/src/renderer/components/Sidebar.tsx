@@ -1,4 +1,10 @@
-import type { ProjectGroup, Session, SessionSource, StatusInfo } from '@spool-lab/core'
+import type {
+  ProjectGroup,
+  Session,
+  SessionSource,
+  SessionSourceActivity,
+  StatusInfo,
+} from '@spool-lab/core'
 import { IconButton, NavItem, SectionLabel } from '@spool-lab/ui'
 import {
   Layers3 as LibraryIcon,
@@ -31,11 +37,37 @@ import {
 import Menu from './Menu.js'
 import PinIcon from './PinIcon.js'
 
+type SourceCounts = {
+  claude: number
+  codex: number
+  gemini: number
+  opencode: number
+  pi: number
+}
+
+/** Sidebar order matches the agent list Spool indexes. */
+const AGENT_SOURCE_ORDER: SessionSource[] = ['claude', 'codex', 'gemini', 'opencode', 'pi']
+
+function agentCounts(status?: StatusInfo | null): SourceCounts | null {
+  if (!status) return null
+  return {
+    claude: status.claudeSessions,
+    codex: status.codexSessions,
+    gemini: status.geminiSessions,
+    opencode: status.opencodeSessions,
+    pi: status.piSessions,
+  }
+}
+
 type Props = {
   activeIdentityKey: string | null
   activeSessionUuid?: string | null
   onSelectProject: (identityKey: string) => void
   onSelectSession?: (sessionUuid: string) => void
+  /** Currently selected agent, when the sidebar's Agents row is driving the
+   *  main pane. */
+  activeSource?: SessionSource | null
+  onSelectSource?: (source: SessionSource) => void
   onSelectHome?: () => void
   isLibraryActive?: boolean
   onSelectShares: () => void
@@ -66,6 +98,8 @@ export default function Sidebar({
   activeSessionUuid = null,
   onSelectProject,
   onSelectSession,
+  activeSource = null,
+  onSelectSource,
   onSelectHome,
   isLibraryActive = false,
   onSelectShares,
@@ -112,6 +146,34 @@ export default function Sidebar({
   const [projectsOpen, setProjectsOpen] = useState(true)
   const [pinned, setPinned] = useState<Session[] | null>(null)
   const [pinnedOpen, setPinnedOpen] = useState(true)
+  const [agentsOpen, setAgentsOpen] = useState(false)
+  const [agentActivity, setAgentActivity] = useState<SessionSourceActivity[] | null>(null)
+
+  // LRU order for the agent rows: most recently used agent first. Loaded when
+  // the section is first opened so the sidebar stays cheap otherwise.
+  useEffect(() => {
+    if (!agentsOpen) return
+    let cancelled = false
+    window.spool
+      .listSourceActivity()
+      .then((rows) => {
+        if (!cancelled) setAgentActivity(rows)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [agentsOpen, status?.lastSyncedAt])
+
+  const agentRows = useMemo(() => {
+    const counts = agentCounts(status)
+    const activity = new Map((agentActivity ?? []).map((row) => [row.source, row]))
+    return AGENT_SOURCE_ORDER.map((source) => ({
+      source,
+      count: counts?.[source] ?? 0,
+      lastSessionAt: activity.get(source)?.lastSessionAt ?? '',
+    })).sort((a, b) => b.lastSessionAt.localeCompare(a.lastSessionAt))
+  }, [status, agentActivity])
 
   useEffect(() => {
     let cancelled = false
@@ -289,6 +351,50 @@ export default function Sidebar({
             </div>
           )}
 
+          {onSelectSource && (
+            <div className="flex-none">
+              <SectionHeader
+                label={t('sidebar.agents')}
+                open={agentsOpen}
+                onToggle={() => setAgentsOpen((open) => !open)}
+                testId="sidebar-agents-toggle"
+              />
+              {agentsOpen && (
+                <div className="px-2 pb-1">
+                  {agentRows.map(({ source, count }) => {
+                    const active = source === activeSource
+                    return (
+                      <button
+                        key={source}
+                        type="button"
+                        data-testid={`sidebar-agent-${source}`}
+                        aria-current={active ? 'true' : undefined}
+                        onClick={() => onSelectSource(source)}
+                        className={`group flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[13px] transition-colors duration-75 ${
+                          active
+                            ? 'bg-warm-surface2 dark:bg-dark-surface2 text-warm-text dark:text-dark-text'
+                            : 'text-warm-text/85 dark:text-dark-text/85 hover:bg-warm-surface2 dark:hover:bg-dark-surface2 hover:text-warm-text dark:hover:text-dark-text'
+                        }`}
+                      >
+                        <span
+                          aria-hidden
+                          className="size-2 flex-none rounded-full"
+                          style={{ background: getSessionSourceColor(source) }}
+                        />
+                        <span className="flex-1 truncate">{getSessionSourceLabel(source)}</span>
+                        {count > 0 && (
+                          <span className="text-warm-faint dark:text-dark-muted text-[11px] tabular-nums">
+                            {count}
+                          </span>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <SectionHeader
               label={t('sidebar.projects')}
@@ -331,7 +437,7 @@ export default function Sidebar({
 
             {projectsOpen && (
               <div className="min-h-0 flex-1 scrollbar-none overflow-y-auto [mask-image:linear-gradient(to_bottom,black_calc(100%_-_20px),transparent)] px-2 pb-3">
-                {groups === null ? (
+          {groups === null ? (
                   <SidebarSkeleton />
                 ) : projectGroups.length === 0 && !looseGroup ? (
                   <p className="text-warm-faint dark:text-dark-muted px-2 py-3 text-xs">
