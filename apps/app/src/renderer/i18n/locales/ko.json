@@ -105,6 +105,7 @@
     "backToResults": "결과로 돌아가기",
     "lastUpdated": "{{when}} 업데이트됨",
     "messages_other": "메시지 {{count}}개",
+    "toolCalls": "도구 호출 {{count}}건",
     "source_claude": "Claude Code",
     "source_codex": "Codex",
     "source_gemini": "Gemini",

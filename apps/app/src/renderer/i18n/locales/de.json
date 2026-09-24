@@ -107,6 +107,7 @@
     "lastUpdated": "Zuletzt aktualisiert {{when}}",
     "messages_one": "{{count}} Nachricht",
     "messages_other": "{{count}} Nachrichten",
+    "toolCalls": "{{count}} Tool-Aufrufe",
     "source_claude": "Claude Code",
     "source_codex": "Codex",
     "source_gemini": "Gemini",

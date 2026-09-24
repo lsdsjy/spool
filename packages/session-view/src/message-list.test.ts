@@ -35,6 +35,55 @@ describe('buildRows', () => {
     ])
   })
 
+  it('folds three or more consecutive tool-only turns into one row', () => {
+    const rows = buildRows(
+      [
+        msg({ id: 1, role: 'user' }),
+        msg({ id: 2, role: 'assistant', contentText: '', toolNames: ['bash'] }),
+        msg({ id: 3, role: 'assistant', contentText: '', toolNames: ['bash'] }),
+        msg({ id: 4, role: 'assistant', contentText: '', toolNames: ['edit'] }),
+        msg({ id: 5, role: 'assistant', contentText: 'done' }),
+      ],
+      label,
+    )
+
+    expect(rows.map((row) => row.kind)).toEqual(['msg', 'toolRun', 'msg'])
+    const run = rows[1]
+    if (run?.kind !== 'toolRun') throw new Error('expected a toolRun row')
+    expect(run.messages.map((message) => message.id)).toEqual([2, 3, 4])
+    expect(run.counts).toEqual([
+      ['bash', 2],
+      ['edit', 1],
+    ])
+    expect(run.startedAt).toBe('2026-07-16T10:00:00.000Z')
+  })
+
+  it('leaves runs shorter than three tool calls as individual rows', () => {
+    const rows = buildRows(
+      [
+        msg({ id: 1, role: 'assistant', contentText: '', toolNames: ['bash'] }),
+        msg({ id: 2, role: 'assistant', contentText: '', toolNames: ['bash'] }),
+      ],
+      label,
+    )
+
+    expect(rows.map((row) => row.kind)).toEqual(['msg', 'msg'])
+  })
+
+  it('does not fold tool turns that carry prose or belong to a sidechain', () => {
+    const rows = buildRows(
+      [
+        msg({ id: 1, role: 'assistant', contentText: '', toolNames: ['bash'] }),
+        msg({ id: 2, role: 'assistant', contentText: '', toolNames: ['bash'] }),
+        msg({ id: 3, role: 'assistant', contentText: 'explaining', toolNames: ['bash'] }),
+        msg({ id: 4, role: 'assistant', contentText: '', toolNames: ['bash'], isSidechain: true }),
+      ],
+      label,
+    )
+
+    expect(rows.map((row) => row.kind)).toEqual(['msg', 'msg', 'msg', 'sidechain'])
+  })
+
   it('inserts one divider per local-day transition', () => {
     const rows = buildRows(
       [

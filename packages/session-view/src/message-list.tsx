@@ -45,6 +45,15 @@ interface Props {
 export type Row =
   | { kind: 'msg'; msg: ConversationMessage; showAvatar: boolean }
   | {
+      kind: 'toolRun'
+      key: string
+      messages: ConversationMessage[]
+      /** Tool name → number of calls, most frequent first. */
+      counts: Array<[string, number]>
+      startedAt: string
+      endedAt: string
+    }
+  | {
       kind: 'sidechain'
       key: string
       label: string
@@ -121,6 +130,28 @@ function groupSidechainMessages(
   return groups
 }
 
+/** A tool-only turn: the agent called tools but wrote no prose. */
+function isToolOnlyMessage(message: ConversationMessage): boolean {
+  return (
+    !message.isSidechain &&
+    message.role === 'assistant' &&
+    message.toolNames.length > 0 &&
+    message.contentText.trim().length === 0
+  )
+}
+
+/** Runs shorter than this stay individual — folding two calls into one
+ *  collapsed row costs more (a click) than it saves. */
+const TOOL_RUN_MIN = 3
+
+function toolRunCounts(messages: ConversationMessage[]): Array<[string, number]> {
+  const counts = new Map<string, number>()
+  for (const message of messages) {
+    for (const name of message.toolNames) counts.set(name, (counts.get(name) ?? 0) + 1)
+  }
+  return Array.from(counts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+}
+
 /** Build the virtualised row list. A divider is inserted whenever the
  *  message's local day differs from the previous row — except before the
  *  very first message, since the session header already shows the start
@@ -138,7 +169,8 @@ export function buildRows(messages: ConversationMessage[], label: DividerLabel):
   let prevDay: string | null = messages[0] ? localDayKey(messages[0].timestamp) : null
   let prevMsg: ConversationMessage | null = null
   const now = new Date()
-  for (const msg of messages) {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]!
     let row: Row
     if (msg.isSidechain) {
       const key = sidechainKey(msg)
@@ -152,12 +184,38 @@ export function buildRows(messages: ConversationMessage[], label: DividerLabel):
         timestamp: group[0]?.timestamp ?? msg.timestamp,
         messages: visibleSidechainMessages(group),
       }
+    } else if (isToolOnlyMessage(msg)) {
+      // Collapse a run of tool-only turns into one row: a long agent loop
+      // otherwise fills the transcript with near-identical `bash` chips.
+      let end = i
+      while (end + 1 < messages.length && isToolOnlyMessage(messages[end + 1]!)) end++
+      const run = messages.slice(i, end + 1)
+      if (run.length >= TOOL_RUN_MIN) {
+        row = {
+          kind: 'toolRun',
+          key: `toolrun-${run[0]!.id}-${run[run.length - 1]!.id}`,
+          messages: run,
+          counts: toolRunCounts(run),
+          startedAt: run[0]!.timestamp,
+          endedAt: run[run.length - 1]!.timestamp,
+        }
+        i = end
+      } else {
+        const showAvatar: boolean =
+          !prevMsg || prevMsg.role !== msg.role || prevMsg.role === 'system'
+        row = { kind: 'msg', msg, showAvatar }
+      }
     } else {
       const showAvatar: boolean = !prevMsg || prevMsg.role !== msg.role || prevMsg.role === 'system'
       row = { kind: 'msg', msg, showAvatar }
     }
 
-    const rowTimestamp = row.kind === 'msg' ? row.msg.timestamp : row.timestamp
+    const rowTimestamp =
+      row.kind === 'msg'
+        ? row.msg.timestamp
+        : row.kind === 'toolRun'
+          ? row.startedAt
+          : row.timestamp
     const day = localDayKey(rowTimestamp)
     if (day !== prevDay) {
       rows.push({
@@ -174,6 +232,14 @@ export function buildRows(messages: ConversationMessage[], label: DividerLabel):
     prevMsg = row.kind === 'msg' ? msg : null
   }
   return rows
+}
+
+function showAvatarInToolRun(messages: ConversationMessage[], index: number): boolean {
+  const message = messages[index]
+  const previous = index > 0 ? messages[index - 1] : null
+  // Expanded runs read as one agent turn: one avatar, then bare chips.
+  if (index > 0 && previous) return false
+  return Boolean(message)
 }
 
 function shouldShowAvatarInGroup(messages: ConversationMessage[], index: number): boolean {
@@ -217,6 +283,7 @@ const MessageList = forwardRef<MessageListHandle, Props>(function MessageList(
 ) {
   const virtuosoRef = useRef<VirtuosoHandle | null>(null)
   const [expandedSidechains, setExpandedSidechains] = useState<Set<string>>(() => new Set())
+  const [expandedToolRuns, setExpandedToolRuns] = useState<Set<string>>(() => new Set())
   const [virtuosoScroller, setVirtuosoScroller] = useState<HTMLElement | null>(null)
   const [scrollbarSyncNonce, setScrollbarSyncNonce] = useState(0)
   const bindVirtuosoScroller = useCallback((ref: HTMLElement | Window | null) => {
@@ -239,7 +306,7 @@ const MessageList = forwardRef<MessageListHandle, Props>(function MessageList(
     const map = new Map<number, number>()
     rows.forEach((row, i) => {
       if (row.kind === 'msg') map.set(row.msg.id, i)
-      else if (row.kind === 'sidechain') {
+      else if (row.kind === 'sidechain' || row.kind === 'toolRun') {
         for (const message of row.messages) map.set(message.id, i)
       }
     })
@@ -381,6 +448,101 @@ const MessageList = forwardRef<MessageListHandle, Props>(function MessageList(
                       message={message}
                       isDark={isDark}
                       showAvatar={shouldShowAvatarInGroup(row.messages, messageIndex)}
+                      {...(matchState
+                        ? { findRanges: matchState.ranges, matchIndexOffset: matchState.offset }
+                        : {})}
+                      activeMatchIndex={containsActive ? activeMatchIndex : -1}
+                      {...(containsActive ? { onActiveMatchRef } : {})}
+                    />
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )
+    }
+    if (row.kind === 'toolRun') {
+      const rowHasFindMatch = showFindBar && hasFindMatch(row.messages, messageFindRanges)
+      const rowHasTarget =
+        targetMessageId != null && row.messages.some((message) => message.id === targetMessageId)
+      const expanded = expandedToolRuns.has(row.key) || rowHasFindMatch || rowHasTarget
+      const started = formatRowTime(row.startedAt, locale)
+      const ended = formatRowTime(row.endedAt, locale)
+      const timeRange = started === ended ? started : `${started} – ${ended}`
+
+      return (
+        <div data-index={index} data-testid="tool-run" className="px-6 py-0.5">
+          <button
+            type="button"
+            onClick={() => {
+              setExpandedToolRuns((current) => {
+                const next = new Set(current)
+                if (next.has(row.key)) next.delete(row.key)
+                else next.add(row.key)
+                return next
+              })
+            }}
+            aria-expanded={expanded}
+            aria-label={(labels.toolCalls ?? DEFAULT_LABELS.toolCalls!)(row.messages.length)}
+            className="group flex w-full min-w-0 items-center gap-2 rounded px-1 py-0.5 text-left transition-colors hover:bg-warm-surface2 dark:hover:bg-dark-surface2"
+          >
+            <span className="flex h-5 w-5 flex-none items-center justify-center rounded-full bg-neutral-700 text-[9px] font-bold text-white dark:bg-neutral-300 dark:text-neutral-900">
+              A
+            </span>
+            <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 text-[10px] text-neutral-400">
+              {row.counts.map(([name, count]) => (
+                <span
+                  key={name}
+                  className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-neutral-500 dark:bg-neutral-800"
+                >
+                  {name}
+                  {count > 1 ? ` ×${count}` : ''}
+                </span>
+              ))}
+              <span className="font-mono">{timeRange}</span>
+            </span>
+            {expanded ? (
+              <ChevronDown
+                size={12}
+                strokeWidth={1.8}
+                className="flex-none text-neutral-400"
+                aria-hidden
+              />
+            ) : (
+              <ChevronRight
+                size={12}
+                strokeWidth={1.8}
+                className="flex-none text-neutral-400 opacity-0 transition-opacity group-hover:opacity-100"
+                aria-hidden
+              />
+            )}
+          </button>
+
+          {expanded && (
+            <div className="mt-1 border-l border-warm-border pl-2 dark:border-dark-border">
+              {row.messages.map((message, messageIndex) => {
+                const matchState = showFindBar ? messageFindRanges.get(message.id) : undefined
+                const containsActive =
+                  matchState != null &&
+                  activeMatchIndex >= matchState.offset &&
+                  activeMatchIndex < matchState.offset + matchState.ranges.length
+                const isTarget = message.id === targetMessageId
+
+                return (
+                  <div
+                    key={message.id}
+                    data-message-id={message.id}
+                    {...(isTarget ? { 'data-testid': 'target-message' } : {})}
+                    {...(isTarget && showTargetHighlight ? { 'data-highlighted': '1' } : {})}
+                    className={`transition-colors duration-700 ${
+                      isTarget && showTargetHighlight ? 'bg-accent/10 dark:bg-accent-dark/10' : ''
+                    }`}
+                  >
+                    <MessageBubble
+                      message={message}
+                      isDark={isDark}
+                      showAvatar={showAvatarInToolRun(row.messages, messageIndex)}
                       {...(matchState
                         ? { findRanges: matchState.ranges, matchIndexOffset: matchState.offset }
                         : {})}
