@@ -58,6 +58,23 @@ describe('buildRows', () => {
     expect(run.startedAt).toBe('2026-07-16T10:00:00.000Z')
   })
 
+  it('folds tool turns that carry only their call arguments', () => {
+    const rows = buildRows(
+      [
+        msg({ id: 1, role: 'assistant', contentText: '$ ls', toolNames: ['bash'], toolCallOnly: true }),
+        msg({ id: 2, role: 'assistant', contentText: '$ pwd', toolNames: ['bash'], toolCallOnly: true }),
+        msg({ id: 3, role: 'assistant', contentText: '$ git status', toolNames: ['bash'], toolCallOnly: true }),
+      ],
+      label,
+    )
+
+    expect(rows.map((row) => row.kind)).toEqual(['toolRun'])
+    const run = rows[0]
+    if (run?.kind !== 'toolRun') throw new Error('expected a toolRun row')
+    expect(run.messages.map((message) => message.contentText)).toEqual(['$ ls', '$ pwd', '$ git status'])
+    expect(run.counts).toEqual([['bash', 3]])
+  })
+
   it('leaves runs shorter than three tool calls as individual rows', () => {
     const rows = buildRows(
       [

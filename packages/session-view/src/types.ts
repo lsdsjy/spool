@@ -13,6 +13,8 @@ export interface ConversationMessage {
   timestamp: string
   isSidechain: boolean
   toolNames: string[]
+  /** Turn consists only of tool calls; contentText is their arguments. */
+  toolCallOnly?: boolean
 }
 
 /** UI strings the list needs; consumers localize, defaults are English. */

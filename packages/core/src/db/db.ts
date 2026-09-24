@@ -17,7 +17,7 @@ export const DB_PATH = join(SPOOL_DIR, 'spool.db')
  * Latest schema version the running build knows how to migrate to.
  * Bump in lockstep with the last `db.pragma('user_version = N')` in runMigrations.
  */
-export const LATEST_SCHEMA_VERSION = 15
+export const LATEST_SCHEMA_VERSION = 16
 
 let _db: Database.Database | null = null
 let _wasNewDb = false
@@ -736,6 +736,17 @@ export function runMigrations(db: Database.Database): void {
         ON published_shares_cache(draft_id) WHERE draft_id IS NOT NULL;
     `)
     db.pragma('user_version = 15')
+  }
+
+  if (version < 16) {
+    // v16: tool_call_only — a turn that is only tool calls. Its content_text
+    // holds the call arguments (the shell command, the file path) so the
+    // transcript and FTS keep them, while readers can still fold long tool
+    // loops into one row without hiding the calls.
+    db.exec(`
+      ALTER TABLE messages ADD COLUMN tool_call_only INTEGER NOT NULL DEFAULT 0
+    `)
+    db.pragma('user_version = 16')
   }
 
   rebuildFtsTableIfEmpty(db, 'messages', 'messages_fts_trigram')

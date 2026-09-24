@@ -340,13 +340,14 @@ export function insertMessages(
     isSidechain: boolean
     toolNames: string[]
     seq: number
+    toolCallOnly?: boolean
   }>,
 ): number {
   const stmt = db.prepare(`
     INSERT INTO messages
       (session_id, source_id, msg_uuid, parent_uuid, role,
-       content_text, timestamp, is_sidechain, tool_names, seq)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       content_text, timestamp, is_sidechain, tool_names, seq, tool_call_only)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(session_id, msg_uuid) WHERE msg_uuid IS NOT NULL DO NOTHING
   `)
 
@@ -363,6 +364,7 @@ export function insertMessages(
       m.isSidechain ? 1 : 0,
       JSON.stringify(m.toolNames),
       m.seq,
+      m.toolCallOnly ? 1 : 0,
     )
     if (info.changes > 0) inserted++
   }
@@ -463,7 +465,8 @@ export function getSessionWithMessages(
     .prepare(`
     SELECT id, session_id AS sessionId, msg_uuid AS msgUuid,
            parent_uuid AS parentUuid, role, content_text AS contentText,
-           timestamp, is_sidechain AS isSidechain, tool_names AS toolNames, seq
+           timestamp, is_sidechain AS isSidechain, tool_names AS toolNames, seq,
+           tool_call_only AS toolCallOnly
     FROM messages
     WHERE session_id = ?
       AND (is_sidechain = 0 OR parent_uuid LIKE 'opencode-subagent:%')
@@ -482,6 +485,7 @@ export function getSessionWithMessages(
     isSidechain: Boolean(r['isSidechain']),
     toolNames: JSON.parse(r['toolNames'] as string) as string[],
     seq: r['seq'] as number,
+    toolCallOnly: Boolean(r['toolCallOnly']),
   }))
 
   return { session, messages }

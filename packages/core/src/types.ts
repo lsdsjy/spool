@@ -11,6 +11,10 @@ export interface ParsedMessage {
   isSidechain: boolean
   toolNames: string[]
   seq: number
+  /** The turn is nothing but tool calls: any contentText is the call's own
+   *  arguments (a shell command, a path), not prose the agent wrote. Lets a
+   *  reader collapse long tool loops without hiding what each call did. */
+  toolCallOnly?: boolean
 }
 
 export interface ParsedSession {
@@ -111,6 +115,7 @@ export interface Message {
   isSidechain: boolean
   toolNames: string[]
   seq: number
+  toolCallOnly: boolean
 }
 
 export interface FragmentResult {
