@@ -117,6 +117,8 @@
     "find_matches_other": "{{current}} / {{total}}",
     "find_noMatch": "無相符項目",
     "resume_inTerminal": "在終端機繼續",
+    "openInCodex": "在 Codex 中開啟",
+    "openInPiWeb": "在 Pi Web 中開啟",
     "copySessionId_short": "複製 ID",
     "scrollToBottom": "捲到底部",
     "msgs_other": "{{count}} 則",

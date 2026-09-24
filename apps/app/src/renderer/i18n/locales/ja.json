@@ -117,6 +117,8 @@
     "find_matches_other": "{{current}} / {{total}}",
     "find_noMatch": "一致なし",
     "resume_inTerminal": "ターミナルで再開",
+    "openInCodex": "Codex で開く",
+    "openInPiWeb": "Pi Web で開く",
     "copySessionId_short": "ID をコピー",
     "scrollToBottom": "末尾までスクロール",
     "msgs_other": "{{count}} 件",

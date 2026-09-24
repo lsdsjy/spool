@@ -82,6 +82,7 @@ import type Database from 'better-sqlite3'
 import { Effect } from 'effect'
 
 import { getSessionResumeCommand } from '../shared/resumeCommand.js'
+import { getSessionExternalTargets } from '../shared/sessionExternalTargets.js'
 import { AcpManager } from './acp.js'
 import {
   dispatchDeepLink,
@@ -1081,6 +1082,30 @@ ipcMain.handle(
       return { ok: true }
     } catch (err) {
       console.error('[spool:resume-cli]', err)
+      return { ok: false, error: String(err) }
+    }
+  },
+)
+
+ipcMain.handle(
+  'spool:open-session-external',
+  async (
+    _e,
+    { sessionUuid, source, cwd }: { sessionUuid: string; source: string; cwd?: string },
+  ) => {
+    try {
+      const piWebBaseUrl = process.env['SPOOL_PI_WEB_URL']?.trim()
+      const [target] = getSessionExternalTargets(
+        { source, sessionUuid, cwd: cwd ?? null },
+        piWebBaseUrl ? { piWebBaseUrl } : {},
+      )
+      if (!target) {
+        return { ok: false, error: `No external app is registered for "${source}" sessions.` }
+      }
+      await shell.openExternal(target.url)
+      return { ok: true }
+    } catch (err) {
+      console.error('[spool:open-session-external]', err)
       return { ok: false, error: String(err) }
     }
   },

@@ -8,6 +8,7 @@ import {
   SquarePen,
   AlertTriangle,
   Check,
+  AppWindow,
 } from 'lucide-react'
 import type React from 'react'
 import { useState } from 'react'
@@ -15,6 +16,7 @@ import { useTranslation } from 'react-i18next'
 
 import { formatRelativeDate, type BucketKey } from '../../shared/formatDate.js'
 import { getSessionResumeCommand } from '../../shared/resumeCommand.js'
+import { getSessionExternalTargets } from '../../shared/sessionExternalTargets.js'
 import { useCachedSecurityPrefs } from '../api/securityPrefsCache.js'
 import { SourceBadge } from './Badges.js'
 import Menu from './Menu.js'
@@ -69,6 +71,12 @@ export default function SessionRow({
   }
 
   const resumeCommand = getSessionResumeCommand(session.source, session.sessionUuid, session.cwd)
+  const externalTarget =
+    getSessionExternalTargets({
+      source: session.source,
+      sessionUuid: session.sessionUuid,
+      cwd: session.cwd ?? null,
+    })[0] ?? null
   async function handleCopyCommand() {
     if (!resumeCommand) return
     await navigator.clipboard.writeText(resumeCommand)
@@ -160,6 +168,21 @@ export default function SessionRow({
                   },
                   disabled: resuming,
                 },
+                ...(externalTarget
+                  ? [
+                      {
+                        label: t(externalTarget.labelKey),
+                        icon: <AppWindow size={14} strokeWidth={1.6} aria-hidden />,
+                        onSelect: () => {
+                          void window.spool.openSessionExternal(
+                            session.sessionUuid,
+                            session.source,
+                            session.cwd ?? undefined,
+                          )
+                        },
+                      },
+                    ]
+                  : []),
                 ...(resumeCommand
                   ? [
                       {
