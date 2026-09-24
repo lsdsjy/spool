@@ -120,6 +120,8 @@
     "find_matches_other": "{{current}} of {{total}}",
     "find_noMatch": "No matches",
     "resume_inTerminal": "Resume in terminal",
+    "openInCodex": "Open in Codex",
+    "openInPiWeb": "Open in Pi Web",
     "copySessionId_short": "Copy ID",
     "scrollToBottom": "Scroll to bottom",
     "msgs_one": "{{count}} msg",

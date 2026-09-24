@@ -9,6 +9,7 @@ import {
   Check,
   RotateCcw,
   Link2,
+  AppWindow,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -16,6 +17,7 @@ import { toast } from 'sonner'
 
 import { formatRelativeDate } from '../../shared/formatDate.js'
 import { getSessionResumeCommand } from '../../shared/resumeCommand.js'
+import { getSessionExternalTargets } from '../../shared/sessionExternalTargets.js'
 import { getSessionSourceColor, getSessionSourceShortLabel } from '../../shared/sessionSources.js'
 import { securityApi } from '../api/security.js'
 import { useHotkeys } from '../hooks/useHotkeys.js'
@@ -300,6 +302,14 @@ export default function SessionDetail({
     )
   }
 
+  const externalTarget = session
+    ? (getSessionExternalTargets({
+        source: session.source,
+        sessionUuid: session.sessionUuid,
+        cwd: session.cwd ?? null,
+      })[0] ?? null)
+    : null
+
   async function handleCopySessionId() {
     if (!session) return
     await navigator.clipboard.writeText(session.sessionUuid)
@@ -320,6 +330,16 @@ export default function SessionDetail({
     setResuming(true)
     await window.spool.resumeCLI(session.sessionUuid, session.source, session.cwd ?? undefined)
     setTimeout(() => setResuming(false), 1000)
+  }
+
+  async function handleOpenExternal() {
+    if (!session) return
+    const result = await window.spool.openSessionExternal(
+      session.sessionUuid,
+      session.source,
+      session.cwd ?? undefined,
+    )
+    if (!result.ok && result.error) toast.error(result.error)
   }
 
   async function handleRefreshFromSource() {
@@ -431,6 +451,20 @@ export default function SessionDetail({
               <SquarePen size={13} strokeWidth={1.6} aria-hidden />
             </button>
           )}
+
+          {externalTarget ? (
+            <button
+              data-testid="detail-open-external"
+              onClick={() => {
+                void handleOpenExternal()
+              }}
+              title={t(externalTarget.labelKey)}
+              aria-label={t(externalTarget.labelKey)}
+              className="text-warm-faint dark:text-dark-muted hover:bg-warm-surface2 dark:hover:bg-dark-surface2 hover:text-warm-text dark:hover:text-dark-text inline-flex h-5 w-5 items-center justify-center rounded transition-colors"
+            >
+              <AppWindow size={13} strokeWidth={1.6} aria-hidden />
+            </button>
+          ) : null}
 
           <button
             data-testid="detail-resume"

@@ -117,6 +117,8 @@
     "find_matches_other": "{{current}} / {{total}}",
     "find_noMatch": "无匹配",
     "resume_inTerminal": "在终端继续",
+    "openInCodex": "在 Codex 中打开",
+    "openInPiWeb": "在 Pi Web 中打开",
     "copySessionId_short": "复制 ID",
     "scrollToBottom": "滚到底部",
     "msgs_other": "{{count}} 条",

@@ -201,6 +201,14 @@ const api = {
     cwd?: string,
   ): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('spool:resume-cli', { sessionUuid, source, cwd }),
+  /** Open this Session in its provider's own app (Codex Desktop, Pi web UI). */
+  openSessionExternal: (
+    sessionUuid: string,
+    source: string,
+    cwd?: string,
+  ): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('spool:open-session-external', { sessionUuid, source, cwd }),
+
 
   copyFragment: (text: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('spool:copy-fragment', { text }),

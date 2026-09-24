@@ -117,6 +117,8 @@
     "find_matches_other": "{{current}} / {{total}}",
     "find_noMatch": "일치 없음",
     "resume_inTerminal": "터미널에서 재개",
+    "openInCodex": "Codex에서 열기",
+    "openInPiWeb": "Pi Web에서 열기",
     "copySessionId_short": "ID 복사",
     "scrollToBottom": "맨 아래로 스크롤",
     "msgs_other": "{{count}}개",
