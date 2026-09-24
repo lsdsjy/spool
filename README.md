@@ -1,17 +1,10 @@
 > **Personal fork.** This is `lsdsjy/spool`, forked from
 > [`spool-lab/spool`](https://github.com/spool-lab/spool) — renamed upstream to
 > [`paperboytm/spool`](https://github.com/paperboytm/spool), which is what GitHub lists as
-> the fork parent. Upstream is the source of truth. This branch builds the desktop app
-> from the v0.6.3 base; see [FORK.md](./FORK.md) for the branch layout, the changes this
-> fork carries, and how to rebuild `/Applications/Spool.app`.
+> the fork parent. Upstream is the source of truth. See [FORK.md](./FORK.md) for the
+> branch layout, the changes this fork carries, and how to rebuild the desktop app.
 
 # Spool
-
-> **Personal fork.** This is `lsdsjy/spool`, forked from
-> [`spool-lab/spool`](https://github.com/spool-lab/spool) — renamed upstream to
-> [`paperboytm/spool`](https://github.com/paperboytm/spool), which is what GitHub lists as
-> the fork parent. Upstream is the source of truth. See [FORK.md](./FORK.md) for what this
-> fork changes, which branch to build from, and how to sync with upstream.
 
 Share, read, and continue agent sessions.
 
