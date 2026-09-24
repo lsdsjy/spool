@@ -132,12 +132,11 @@ function groupSidechainMessages(
 
 /** A tool-only turn: the agent called tools but wrote no prose. */
 function isToolOnlyMessage(message: ConversationMessage): boolean {
-  return (
-    !message.isSidechain &&
-    message.role === 'assistant' &&
-    message.toolNames.length > 0 &&
-    message.contentText.trim().length === 0
-  )
+  if (message.isSidechain || message.role !== 'assistant') return false
+  if (message.toolNames.length === 0) return false
+  // Either the row carries no text at all, or it carries nothing but the
+  // call's own arguments (pi stores the shell command there).
+  return message.toolCallOnly === true || message.contentText.trim().length === 0
 }
 
 /** Runs shorter than this stay individual — folding two calls into one

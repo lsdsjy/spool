@@ -6,12 +6,15 @@ import { stripSpoolSystemPrelude } from './spool-prelude.js'
 
 // v1: initial pi support — session header + message records from
 // ~/.pi/agent/sessions/<cwd-slug>/<timestamp>_<uuid>.jsonl.
-export const PI_INDEX_VERSION = 'pi-v1-session-search-fts'
+// v2: tool call arguments join the message text, so a `bash` turn shows the
+// command it ran instead of a bare tool label.
+export const PI_INDEX_VERSION = 'pi-v2-tool-call-arguments'
 
 interface PiContentBlock {
   type?: string
   text?: string
   name?: string
+  arguments?: unknown
 }
 
 interface PiMessagePayload {
@@ -96,6 +99,9 @@ export function loadPiSession(filePath: string): ParseSessionResult {
       isSidechain: false,
       toolNames,
       seq: messages.length,
+      ...(toolNames.length > 0 && !hasProse(record.message.content)
+        ? { toolCallOnly: true }
+        : {}),
     })
   }
 
@@ -131,20 +137,76 @@ export function parsePiSession(filePath: string): ParsedSession | null {
   }
 }
 
+/** True when the payload carries agent prose (a text block with content).
+ *  Tool arguments alone do not count — a `bash` turn is still a tool turn. */
+function hasProse(content: unknown): boolean {
+  if (typeof content === 'string') return content.trim().length > 0
+  if (!Array.isArray(content)) return false
+  return content.some((block) => {
+    if (!block || typeof block !== 'object') return false
+    const { type, text } = block as PiContentBlock
+    return type === 'text' && typeof text === 'string' && text.trim().length > 0
+  })
+}
+
 function extractText(content: unknown): string {
   if (typeof content === 'string') return stripSpoolSystemPrelude(content).trim()
   if (!Array.isArray(content)) return ''
 
-  return stripSpoolSystemPrelude(
-    content
-      .map((block) => {
-        if (!block || typeof block !== 'object') return ''
-        const { type, text } = block as PiContentBlock
-        return type === 'text' && typeof text === 'string' ? text : ''
-      })
-      .filter(Boolean)
-      .join('\n'),
-  ).trim()
+  const parts: string[] = []
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue
+    const { type, text, name, arguments: args } = block as PiContentBlock
+    if (type === 'text' && typeof text === 'string') {
+      const clean = stripSpoolSystemPrelude(text).trim()
+      if (clean) parts.push(clean)
+      continue
+    }
+    if (type === 'toolCall') {
+      const summary = summarizeToolCall(name, args)
+      if (summary) parts.push(summary)
+    }
+  }
+
+  return parts.join('\n').trim()
+}
+
+/** One line that tells the reader what a tool call actually did. The tool
+ *  name is already rendered as its own chip, so this returns the argument
+ *  that carries the meaning — the shell command, the file, the MCP tool. */
+function summarizeToolCall(name: string | undefined, args: unknown): string {
+  const tool = typeof name === 'string' && name.trim() ? name.trim() : 'tool'
+  const record = args && typeof args === 'object' ? (args as Record<string, unknown>) : null
+  if (!record) return tool
+
+  const str = (key: string): string =>
+    typeof record[key] === 'string' ? (record[key] as string).trim() : ''
+
+  if (tool === 'bash') {
+    const command = str('command')
+    return command ? `$ ${command}` : tool
+  }
+
+  const path = str('path') || str('file_path') || str('filePath')
+  if (path) return path
+
+  if (tool === 'mcp' || tool === 'mcp_script') {
+    const server = str('server')
+    const mcpTool = str('tool')
+    const code = str('code')
+    if (server || mcpTool) return [server, mcpTool].filter(Boolean).join(' · ')
+    if (code) return code.split('\n')[0]!.slice(0, 160)
+  }
+
+  const fallback = str('command') || str('query') || str('pattern') || str('url')
+  if (fallback) return fallback.split('\n')[0]!.slice(0, 160)
+
+  try {
+    const json = JSON.stringify(record)
+    return json && json !== '{}' ? `${tool} ${json.slice(0, 160)}` : tool
+  } catch {
+    return tool
+  }
 }
 
 function extractToolNames(content: unknown): string[] {
