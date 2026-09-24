@@ -10,20 +10,21 @@ here is a pull-request branch; it is "keep my own build working".
 
 ## Branches
 
-| Branch                | Base                  | Purpose                                                                                                                                       |
-| --------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `main`                | upstream `main`       | Clean mirror. Fast-forwards from upstream, never carries local commits.                                                                       |
-| `local/main`          | upstream `main`       | Core and shared-package patches (what the CLI, daemon, and web reader use).                                                                   |
-| `local/desktop-0.6.3` | upstream tag `v0.6.3` | Patches for the Electron desktop app, plus everything on `local/main`. This is the branch that builds and installs `/Applications/Spool.app`. |
+| Branch                | Base                  | Purpose                                                                                                                                              |
+| --------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `main`                | upstream `main`       | The fork's development branch: upstream `main` plus every local patch (core, shared packages, and the archived desktop app's source).                  |
+| `local/desktop-0.6.3` | upstream tag `v0.6.3` | Same patches, on the last base that can still be packaged. This is the branch that builds and installs `/Applications/Spool.app`.                       |
 
-`local/desktop-0.6.3` exists because upstream archived `apps/app` in v0.7.0
-(`pnpm-workspace.yaml` excludes it and the package has no scripts). The last release that
-can be built and packaged is v0.6.3, so the desktop fork stays on that base and carries
-the current changes forward by hand.
+Why two branches: upstream archived `apps/app` in v0.7.0 — `pnpm-workspace.yaml` excludes
+it and the package lost its scripts and packaging dependencies. v0.6.3 is the last release
+that can be built, so the desktop work stays on that base while `main` tracks upstream.
+
+The former `local/main` branch was merged into `main` and deleted; the patches are
+identical.
 
 ## What this fork changes
 
-Core and shared packages (`local/main`, `local/desktop-0.6.3`):
+Core and shared packages:
 
 - **Codex subagent threads are folded into their parent Session.** Codex writes one
   rollout per spawned thread (`session_meta.source.subagent.thread_spawn`). Upstream
@@ -37,7 +38,7 @@ Core and shared packages (`local/main`, `local/desktop-0.6.3`):
 - **The Codex provider label reads `Codex`, not `Codex CLI`**, because Codex Desktop,
   `codex-tui`, and `codex_exec` Sessions all land in the same source.
 
-Desktop app (`local/desktop-0.6.3` only):
+Desktop app (source lives on both branches; only `local/desktop-0.6.3` can build it):
 
 - **Agents section in the sidebar.** One row per provider (`Claude Code`, `Codex`,
   `Gemini CLI`, `OpenCode`, `Pi`), ordered by most recently used, shown above Projects.
@@ -52,7 +53,7 @@ Desktop app (`local/desktop-0.6.3` only):
 
 ```bash
 git switch local/desktop-0.6.3
-pnpm install                      # electron and the agent SDKs are large; a mirror may stall
+pnpm install                      # electron and the agent SDKs are large
 # If install retries forever on @openai/codex, onnxruntime-node, or
 # claude-agent-sdk-darwin-arm64 (mirrors 302 to a CDN that drops the tarball):
 #   printf 'registry=https://registry.npmjs.org/\n' > .npmrc && pnpm install
@@ -81,17 +82,25 @@ Two gotchas worth remembering:
 - `vp run build` can serve a stale cache hit. If a core change does not show up, rebuild
   with `cd packages/core && pnpm run clean && pnpm exec tsc`.
 - The desktop app and the `spool` CLI share `~/.spool/spool.db`. Only a build that knows
-  about a change should write it, so keep `local/desktop-0.6.3` and `local/main` in sync.
+  about a change should write it, so keep both branches' `packages/` in sync when a
+  parser or query changes.
 
 ## Syncing with upstream
 
 ```bash
 git remote add upstream https://github.com/paperboytm/spool.git   # once
 git fetch upstream
-git switch main && git merge --ff-only upstream/main && git push fork main
-git switch local/main && git rebase main
-git switch local/desktop-0.6.3 && git rebase --onto v0.6.3 v0.6.3   # or cherry-pick onto a new base
+git switch main
+git merge upstream/main            # or rebase, main carries local commits
+git push fork main
+```
+
+For the desktop branch, port the wanted upstream commits onto the v0.6.3 base:
+
+```bash
+git switch local/desktop-0.6.3
+git cherry-pick <commits>
 ```
 
 Expect conflicts in `packages/session-kit/src/messages.ts` around the Codex parser when
-upstream touches it; the fork's hunks are all in the Codex section.
+upstream touches it; this fork's hunks are all in the Codex section.
