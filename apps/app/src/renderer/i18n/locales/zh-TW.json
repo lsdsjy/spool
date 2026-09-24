@@ -105,6 +105,7 @@
     "backToResults": "返回結果列表",
     "lastUpdated": "最近更新於 {{when}}",
     "messages_other": "{{count}} 則訊息",
+    "toolCalls": "{{count}} 次工具呼叫",
     "source_claude": "Claude Code",
     "source_codex": "Codex",
     "source_gemini": "Gemini",

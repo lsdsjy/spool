@@ -21,10 +21,13 @@ export interface MessageListLabels {
   yesterday: string
   /** e.g. (3) => '3 messages' */
   messagesCount: (count: number) => string
+  /** Accessible label for a merged run of tool calls. */
+  toolCalls?: (count: number) => string
 }
 
 export const DEFAULT_LABELS: MessageListLabels = {
   today: 'Today',
   yesterday: 'Yesterday',
   messagesCount: (count) => (count === 1 ? '1 message' : `${count} messages`),
+  toolCalls: (count) => (count === 1 ? '1 tool call' : `${count} tool calls`),
 }

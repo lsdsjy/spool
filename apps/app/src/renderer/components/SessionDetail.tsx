@@ -545,6 +545,7 @@ export default function SessionDetail({
           today: t('session.divider_today'),
           yesterday: t('session.divider_yesterday'),
           messagesCount: (count) => t('session.messages_other', { count }),
+          toolCalls: (count) => t('session.toolCalls', { count }),
         }}
         locale={i18n.language}
       />

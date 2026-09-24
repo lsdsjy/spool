@@ -105,6 +105,7 @@
     "backToResults": "結果一覧に戻る",
     "lastUpdated": "{{when}}に更新",
     "messages_other": "{{count}} 件のメッセージ",
+    "toolCalls": "{{count}} 件のツール呼び出し",
     "source_claude": "Claude Code",
     "source_codex": "Codex",
     "source_gemini": "Gemini",
