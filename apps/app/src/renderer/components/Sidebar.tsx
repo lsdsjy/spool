@@ -143,10 +143,12 @@ export default function Sidebar({
     }
   }
   const [groups, setGroups] = useState<ProjectGroup[] | null>(null)
-  const [projectsOpen, setProjectsOpen] = useState(true)
+  // Agents is the quick way into one provider's Sessions; the project tree is
+  // long, so it starts folded and the user opens it when they navigate by repo.
+  const [projectsOpen, setProjectsOpen] = useState(false)
   const [pinned, setPinned] = useState<Session[] | null>(null)
   const [pinnedOpen, setPinnedOpen] = useState(true)
-  const [agentsOpen, setAgentsOpen] = useState(false)
+  const [agentsOpen, setAgentsOpen] = useState(true)
   const [agentActivity, setAgentActivity] = useState<SessionSourceActivity[] | null>(null)
 
   // LRU order for the agent rows: most recently used agent first. Loaded when
